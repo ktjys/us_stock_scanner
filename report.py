@@ -1,26 +1,24 @@
+"""주간 리포트를 콘솔에 출력한다 (로컬 확인용)."""
+
+import argparse
 import os
+
 from supabase import create_client
 
-db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+from stock_scanner import _fetch_all
+from weekly_report import build_report_text
 
-def main():
-    rows = db.table("signals").select("*").execute().data or []
-    if not rows:
-        print("아직 신호 데이터가 없습니다.")
-        return
 
-    msg = ["📈 미국주식 매수신호 주간 리포트", "",
-           f"누적 신호: {len(rows)}개", ""]
-    for n, key in [(5,"return_5d"),(10,"return_10d"),(20,"return_20d")]:
-        vals = [r[key] for r in rows if r.get(key) is not None]
-        if vals:
-            avg = sum(vals)/len(vals)
-            win = sum(v > 0 for v in vals)/len(vals)*100
-            msg.append(f"{n}일: 평균 {avg:+.2f}% | 승률 {win:.1f}% | 표본 {len(vals)}")
-        else:
-            msg.append(f"{n}일: 데이터 부족")
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weeks", type=int, default=None, help="집계 기간(주). 생략 시 전체")
+    args = parser.parse_args()
+    weeks = args.weeks if args.weeks and args.weeks > 0 else None
 
-    print("\n".join(msg))
+    db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    rows = _fetch_all(db.table("signals").select("*"))
+    print(build_report_text(rows, weeks))
+
 
 if __name__ == "__main__":
     main()

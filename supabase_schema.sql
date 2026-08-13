@@ -26,8 +26,17 @@ create table if not exists signals (
   unique(signal_date, ticker)
 );
 
+create table if not exists watchlist (
+  ticker text primary key,
+  name text not null,
+  active boolean not null default true
+);
+
 create index if not exists idx_daily_ticker_date
   on daily_data(ticker, date);
 
 create index if not exists idx_signals_date
   on signals(signal_date);
+
+create index if not exists idx_signals_ticker
+  on signals(ticker);
