@@ -21,6 +21,7 @@ Repository → Settings → Secrets and variables → Actions에 등록:
 - 미완료 신호(return_20d 미갱신)의 5/10/20일 수익률 업데이트
 - 매수 후보 Telegram 발송 (같은 종목은 5일 이내 재알림 없음)
 - yfinance 조회는 3회 재시도(지수 백오프), 7일 이상 지난 데이터(거래정지 등)는 스킵
+- 미국 시장 휴일(굿 프라이데이 포함 NYSE 휴장일)에는 스캔을 건너뜀
 - 스캔 실패 시 exit code 1 → 워크플로우 실패 + 실패 원인 Telegram 발송
 
 매주 월요일:

@@ -9,12 +9,14 @@ import os
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
 import requests
 import yfinance as yf
+from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
+                                    USFederalHolidayCalendar)
 from supabase import create_client
 
 WATCHLIST_FILE = "watchlist.csv"
@@ -335,6 +337,26 @@ def _seed_from_csv(db: Any) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 미국 시장 휴일
+# ---------------------------------------------------------------------------
+
+# NYSE 휴장일 캘린더. USFederalHolidayCalendar에는 콜럼버스 데이/재향군인의 날이
+# 포함되지만 NYSE는 휴장하지 않으므로 제외하고, 캘린더에 없는 굿 프라이데이를 추가한다.
+_US_MARKET_HOLIDAYS = AbstractHolidayCalendar(
+    rules=[r for r in USFederalHolidayCalendar.rules
+           if r.name not in ("Columbus Day", "Veterans Day")]
+    + [GoodFriday]
+)
+
+
+def is_us_market_holiday(d: date) -> bool:
+    """미국 증시 휴장일 여부 (주말 제외, NYSE 공식 휴일 기준)."""
+    if d.weekday() >= 5:
+        return False
+    return _US_MARKET_HOLIDAYS.holidays(start=d, end=d).size > 0
+
+
+# ---------------------------------------------------------------------------
 # 메인
 # ---------------------------------------------------------------------------
 
@@ -361,9 +383,12 @@ def scan(date: str | None = None,
     - persist=False: DB 저장/수익률 갱신 생략 (Supabase 미사용, 분석만)
     - notify=False: 텔레그램 대신 콘솔에 알림 메시지를 출력
     """
-    db = get_db() if persist else None
     # 한국시간 날짜가 아니라 실제 실행일을 DB 기준 날짜로 사용.
     date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if is_us_market_holiday(datetime.strptime(date, "%Y-%m-%d").date()):
+        print(f"[{date}] 미국 시장 휴일 — 스캔 생략")
+        return [], []
+    db = get_db() if persist else None
     candidates: list[dict[str, Any]] = []
     failures: list[str] = []
 

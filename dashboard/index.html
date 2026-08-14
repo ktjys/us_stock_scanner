@@ -26,12 +26,14 @@
     <button class="tab-btn" data-screen="scoreboard">점수판</button>
     <button class="tab-btn" data-screen="detail">상세</button>
     <button class="tab-btn" data-screen="signals">신호·성과</button>
+    <button class="tab-btn" data-screen="heatmap">히트맵</button>
     <button class="tab-btn" data-screen="backtest">백테스트</button>
   </nav>
 
   <main>
     <!-- 화면 1: 현황 -->
     <section id="screen-status" class="screen">
+      <div id="status-scan-banner" class="scan-banner hidden"></div>
       <div id="status-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
       <div id="status-error" class="error hidden"></div>
       <div id="status-content" class="hidden">
@@ -61,6 +63,29 @@
       <div class="toolbar">
         <label>날짜
           <select id="scoreboard-date"></select>
+        </label>
+        <label>RSI
+          <select id="scoreboard-filter-rsi">
+            <option value="all">전체</option>
+            <option value="oversold">과매도(&lt;35)</option>
+            <option value="weak">약과매도(35~40)</option>
+            <option value="neutral">중립(40~60)</option>
+            <option value="overheat">과열(≥60)</option>
+          </select>
+        </label>
+        <label>50일선
+          <select id="scoreboard-filter-ma50">
+            <option value="all">전체</option>
+            <option value="above">위 (close&gt;ma50)</option>
+            <option value="below">아래 (close&lt;ma50)</option>
+          </select>
+        </label>
+        <label>거래량비
+          <select id="scoreboard-filter-vol">
+            <option value="all">전체</option>
+            <option value="high">1.2배 이상</option>
+            <option value="low">1.2배 미만</option>
+          </select>
         </label>
       </div>
       <div id="scoreboard-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
@@ -120,7 +145,7 @@
       <div id="signals-error" class="error hidden"></div>
       <div id="signals-content" class="hidden">
         <div class="stat-cards" id="signals-stats"></div>
-        <div class="table-wrap">
+        <div class="table-wrap" id="signals-table-wrap">
           <table id="signals-table">
             <thead>
               <tr>
@@ -136,10 +161,29 @@
             <tbody id="signals-body"></tbody>
           </table>
         </div>
+        <div id="signals-empty" class="empty-card hidden">
+          아직 65점 이상 신호가 없습니다. <strong>히트맵</strong> 탭에서 전체 종목 점수 추이를, <strong>현황</strong> 탭에서 근접 후보(60~64점)를 확인하세요.
+          <div class="links">
+            <button id="signals-go-heatmap" type="button">히트맵 탭 보기</button>
+            <button id="signals-go-status" type="button">현황 탭 보기</button>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- 화면 5: 백테스트 -->
+    <!-- 화면 5: 히트맵 -->
+    <section id="screen-heatmap" class="screen hidden">
+      <div id="heatmap-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="heatmap-error" class="error hidden"></div>
+      <div id="heatmap-content" class="hidden">
+        <p class="heatmap-hint">행=종목, 열=날짜(최근 10거래일). 셀 클릭 시 해당 종목 상세로 이동합니다.</p>
+        <div class="table-wrap">
+          <div id="heatmap-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 화면 6: 백테스트 -->
     <section id="screen-backtest" class="screen hidden">
       <div id="backtest-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
       <div id="backtest-error" class="error hidden"></div>

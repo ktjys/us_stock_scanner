@@ -56,6 +56,10 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     d.setUTCDate(d.getUTCDate() - days);
     return d.toISOString().slice(0, 10);
   }
+  function daysSince(dateStr) {
+    var t = new Date(dateStr + "T00:00:00Z").getTime();
+    return Math.floor((Date.now() - t) / 86400000);
+  }
 
   // ---- Supabase 1000행 제한 우회 ----
   // query: select() 로 시작된 빌더 (.order 등은 미리 적용). 매 루프 .range() 재설정.
@@ -181,24 +185,47 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       btn.addEventListener("click", function () {
         var screen = btn.getAttribute("data-screen");
         if (screen === currentScreen) return;
-        // 상세 탭을 떠날 때 차트 정리 (중복 캔버스 버그 방지)
-        if (currentScreen === "detail") destroyCharts();
-        currentScreen = screen;
-        tabs.forEach(function (b) { b.classList.toggle("active", b === btn); });
-        ["status", "scoreboard", "detail", "signals", "backtest"].forEach(function (s) {
-          $("screen-" + s).classList.toggle("hidden", s !== screen);
-        });
-        if (screen === "backtest") { loadBacktest(); return; }
-        if (!sb) {
-          showConfigNeeded($(screen + "-error"));
-          return;
-        }
-        if (screen === "status") loadStatus();
-        else if (screen === "scoreboard") loadScoreboardDates();
-        else if (screen === "detail") loadDetail();
-        else if (screen === "signals") loadSignals();
+        switchScreen(screen);
       });
     });
+  }
+
+  function switchScreen(screen, arg) {
+    // 상세 탭을 떠날 때 차트 정리 (중복 캔버스 버그 방지)
+    if (currentScreen === "detail") destroyCharts();
+    currentScreen = screen;
+    $("tabs").querySelectorAll(".tab-btn").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-screen") === screen);
+    });
+    ["status", "scoreboard", "detail", "signals", "backtest", "heatmap"].forEach(function (s) {
+      $("screen-" + s).classList.toggle("hidden", s !== screen);
+    });
+    if (screen === "backtest") { loadBacktest(); return; }
+    if (!sb) {
+      showConfigNeeded($(screen + "-error"));
+      return;
+    }
+    if (screen === "status") loadStatus();
+    else if (screen === "scoreboard") loadScoreboardDates();
+    else if (screen === "detail") { if (arg) setDetailTicker(arg); loadDetail(); }
+    else if (screen === "signals") loadSignals();
+    else if (screen === "heatmap") loadHeatmap();
+  }
+
+  function goToDetail(ticker) {
+    switchScreen("detail", ticker);
+  }
+
+  function setDetailTicker(ticker) {
+    var sel = $("detail-ticker");
+    if (!sel.options.length) {
+      activeTickers.forEach(function (tk) {
+        var o = document.createElement("option");
+        o.value = tk; o.textContent = tk + (nameMap[tk] ? " · " + nameMap[tk] : "");
+        sel.appendChild(o);
+      });
+    }
+    sel.value = ticker;
   }
 
   function destroyCharts() {
@@ -235,6 +262,26 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
           .sort(function (a, b) { return b.score - a.score; });
 
         $("status-latest-date").textContent = latest || "데이터 없음";
+        // 스캔 중단 감지: 오늘 UTC 기준 3일 초과 시 경고. 주말(토/일)은 미표시,
+        // 월요일은 주말 보정(금요일 스캔=3일차까지 정상)하여 오경고 방지.
+        var banner = $("status-scan-banner");
+        if (!latest) {
+          banner.classList.add("hidden");
+        } else {
+          var diff = daysSince(latest);
+          var dow = new Date().getUTCDay();
+          var warn = false;
+          if (dow !== 0 && dow !== 6) {
+            var allowed = dow === 1 ? 3 : 2;
+            warn = diff > allowed;
+          }
+          if (warn) {
+            banner.textContent = "⚠️ 스캔 중단됨 — 마지막 스캔: " + latest + " (" + diff + "일 전)";
+            banner.classList.remove("hidden");
+          } else {
+            banner.classList.add("hidden");
+          }
+        }
         $("status-candidate-count").textContent = candidates.length;
         $("status-active-count").textContent = activeTickers.length;
 
@@ -313,7 +360,28 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     $("scoreboard-date").addEventListener("change", function () {
       loadScoreboardRows(this.value);
     });
+    $("scoreboard-filter-rsi").addEventListener("change", renderScoreboard);
+    $("scoreboard-filter-ma50").addEventListener("change", renderScoreboard);
+    $("scoreboard-filter-vol").addEventListener("change", renderScoreboard);
     // 헤더 정렬은 행 로드 후 동적 생성
+  }
+
+  // 점수판 클라이언트 필터 (서버 재조회 없음)
+  function getFilteredSbData() {
+    var rsi = $("scoreboard-filter-rsi").value;
+    var ma = $("scoreboard-filter-ma50").value;
+    var vol = $("scoreboard-filter-vol").value;
+    return sbData.filter(function (r) {
+      if (rsi === "oversold" && !(r.rsi < 35)) return false;
+      if (rsi === "weak" && !(r.rsi >= 35 && r.rsi < 40)) return false;
+      if (rsi === "neutral" && !(r.rsi >= 40 && r.rsi < 60)) return false;
+      if (rsi === "overheat" && !(r.rsi >= 60)) return false;
+      if (ma === "above" && !(r.close > r.ma50)) return false;
+      if (ma === "below" && !(r.close < r.ma50)) return false;
+      if (vol === "high" && !(r.volume_ratio >= 1.2)) return false;
+      if (vol === "low" && !(r.volume_ratio < 1.2)) return false;
+      return true;
+    });
   }
 
   async function loadScoreboardDates() {
@@ -393,8 +461,8 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       head.appendChild(th);
     });
 
-    // 정렬
-    var sorted = sbData.slice().sort(function (a, b) {
+    var filtered = getFilteredSbData();
+    var sorted = filtered.slice().sort(function (a, b) {
       var av = a[sbSort.key], bv = b[sbSort.key];
       if (typeof av === "string") {
         return sbSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -406,8 +474,12 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
     var body = $("scoreboard-body");
     body.innerHTML = "";
-    if (!sorted.length) {
+    if (!sbData.length) {
       body.innerHTML = '<tr><td colspan="' + SB_COLS.length + '" class="empty">데이터가 없습니다.</td></tr>';
+      return;
+    }
+    if (!sorted.length) {
+      body.innerHTML = '<tr><td colspan="' + SB_COLS.length + '" class="empty">필터 조건에 맞는 종목 없음</td></tr>';
       return;
     }
     sorted.forEach(function (r) {
@@ -432,6 +504,95 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       });
       body.appendChild(tr);
     });
+  }
+
+  // =====================================================================
+  // 화면 5: 히트맵 (점수 그리드)
+  // =====================================================================
+  function heatClass(score) {
+    if (score <= 0) return 0;       // 회색
+    if (score < 35) return 1;       // 짙은 파랑
+    if (score < 60) return 2;       // 중간 파랑
+    if (score < 65) return 3;       // 주황 (근접)
+    return 4;                       // 빨강 (신호)
+  }
+
+  async function loadHeatmap() {
+    await runLoad(
+      "daily_data(히트맵)",
+      async function () {
+        var rows = await fetchAllPaged(
+          sb.from("daily_data").select("*").order("date", { ascending: false }).order("ticker", { ascending: true })
+        );
+        // 최근 10개 날짜 (중복 제거, date desc 상태)
+        var seen = {};
+        var dates = [];
+        rows.forEach(function (r) {
+          if (!seen[r.date]) { seen[r.date] = true; dates.push(r.date); }
+        });
+        dates = dates.slice(0, 10).sort(); // 열은 오래된→최신 순
+
+        var map = {};
+        rows.forEach(function (r) {
+          if (map[r.ticker] === undefined) map[r.ticker] = {};
+          map[r.ticker][r.date] = r.score;
+        });
+
+        var tickers = activeTickers.slice();
+        var box = $("heatmap-grid");
+        box.innerHTML = "";
+        if (!tickers.length || !dates.length) {
+          box.innerHTML = '<div class="empty">히트맵을 표시할 데이터가 없습니다.</div>';
+          $("heatmap-content").classList.remove("hidden");
+          return;
+        }
+
+        var table = document.createElement("table");
+        table.className = "heatmap-table";
+        var thead = document.createElement("thead");
+        var htr = document.createElement("tr");
+        var thTk = document.createElement("th");
+        thTk.textContent = "종목";
+        htr.appendChild(thTk);
+        dates.forEach(function (d) {
+          var th = document.createElement("th");
+          th.textContent = d.slice(5);
+          th.title = d;
+          htr.appendChild(th);
+        });
+        thead.appendChild(htr);
+        table.appendChild(thead);
+
+        var tbody = document.createElement("tbody");
+        tickers.forEach(function (tk) {
+          var tr = document.createElement("tr");
+          var tdTk = document.createElement("td");
+          tdTk.className = "ticker-cell";
+          tdTk.innerHTML = tickerLabel(tk);
+          tr.appendChild(tdTk);
+          dates.forEach(function (d) {
+            var td = document.createElement("td");
+            var score = map[tk] ? map[tk][d] : undefined;
+            if (score == null) {
+              td.className = "hm-empty";
+              td.textContent = "·";
+            } else {
+              td.className = "hm-" + heatClass(score);
+              td.textContent = score;
+              td.title = tk + " · " + d + " · 점수 " + score;
+              td.addEventListener("click", function () { goToDetail(tk); });
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        box.appendChild(table);
+        $("heatmap-content").classList.remove("hidden");
+      },
+      $("heatmap-loading"),
+      $("heatmap-error")
+    );
   }
 
   // =====================================================================
@@ -563,6 +724,12 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     $("signals-period").addEventListener("change", function () {
       loadSignals();
     });
+    $("signals-go-heatmap").addEventListener("click", function () {
+      switchScreen("heatmap");
+    });
+    $("signals-go-status").addEventListener("click", function () {
+      switchScreen("status");
+    });
   }
 
   async function loadSignals() {
@@ -615,9 +782,12 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     var body = $("signals-body");
     body.innerHTML = "";
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="7" class="empty">해당 기간 신호가 없습니다.</td></tr>';
+      $("signals-table-wrap").classList.add("hidden");
+      $("signals-empty").classList.remove("hidden");
       return;
     }
+    $("signals-table-wrap").classList.remove("hidden");
+    $("signals-empty").classList.add("hidden");
     rows.forEach(function (r) {
       var tr = document.createElement("tr");
       function cell(html, cls) {
@@ -642,7 +812,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
   }
 
   // =====================================================================
-  // 화면 5: 백테스트 (정적 JSON, Supabase 불함)
+  // 화면 6: 백테스트 (정적 JSON, Supabase 불함)
   // =====================================================================
   var backtestChart = null;
   var backtestLoaded = false;
@@ -795,6 +965,8 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       body.appendChild(tr);
     });
   }
+
+  window.loadHeatmap = loadHeatmap;
 
   // ---- 부트스트랩 ----
   if (document.readyState === "loading") {
