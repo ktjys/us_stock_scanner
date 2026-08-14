@@ -92,5 +92,26 @@ python -m pytest tests/     # 테스트 실행 (pip install -r requirements-dev.
 데이터를 보호하려면 테스트 전용 Supabase 프로젝트를 사용하세요.
 처리 실패 종목이 있으면 exit code 1로 종료됩니다 (CI에서 실패로 감지 가능).
 
-## 7. 주의
+## 7. 대시보드
+`dashboard/` 폴더의 정적 페이지를 GitHub Pages로 배포해 Supabase 데이터를 웹에서 확인합니다.
+읽기 전용이며, 종목 관리(watchlist)는 섹션 5의 CLI를 사용합니다.
+
+### 설정 (최초 1회)
+1. Supabase SQL Editor에서 `supabase_dashboard_rls.sql` 실행 — anon 키를 읽기 전용으로 제한
+   (스캐너가 쓰는 `SUPABASE_KEY`는 **service_role 키**여야 합니다. anon 키라면
+   RLS 활성화로 쓰기가 거부됩니다)
+2. `dashboard/config.example.js`를 `dashboard/config.js`로 복사 후 키 입력:
+   Supabase 콘솔 → Settings → API → Project URL / anon public key
+   (`config.js`는 .gitignore로 커밋에서 제외됩니다)
+3. GitHub → Settings → Pages → Source를 **GitHub Actions**로 변경 (최초 1회)
+4. 이후 `dashboard/` 파일이 커밋되면 워크플로우가 자동 배포됩니다
+   (URL: `https://<사용자명>.github.io/us_stock_scanner/`)
+
+### 화면
+- 현황: 최신 스캔 날짜, 당일 후보(≥65점) 수, 후보 상위 3종목 카드
+- 점수판: 날짜별 종목 테이블 (점수/RSI/고점대비/이동평균/거래량비, 컬럼 정렬)
+- 상세: 종목별 가격+MA20/MA50, 점수, RSI 차트 (1/3/6개월, RSI 35/40 참조선)
+- 신호·성과: 신호 히스토리 + 기간별(4/12주/전체) 승률·평균 수익률 (주간 리포트와 동일 로직)
+
+## 8. 주의
 기술적 신호는 매수 추천이나 수익을 보장하지 않습니다.

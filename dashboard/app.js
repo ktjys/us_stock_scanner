@@ -1,0 +1,620 @@
+// dashboard/app.js — 정적 대시보드 SPA (빌드 도구 없음, UMD CDN 사용)
+//
+// 헬퍼 요약:
+//   fetchAllPaged(query)  : Supabase 1000행 제한을 .range() 루프로 우회해 전체 수집
+//   computeStats(rows)    : weekly_report.build_report_text 와 동일 계산 (단순평균/양수비율)
+//   fmt*()                : 숫자/통화/퍼센트 포맷
+//   runLoad(label,fn,...) : 로딩 스피너 + 테이블별 에러 표시 래퍼
+//   showConfigNeeded()    : config.js 부재 시 안내
+
+(function () {
+  "use strict";
+
+  var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
+  var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
+
+  // ---- 설정 로드 (config.js 가 window.DASHBOARD_CONFIG 로 노출) ----
+  var CONFIG = window.DASHBOARD_CONFIG || null;
+  var sb = null; // supabase 클라이언트
+
+  if (CONFIG && CONFIG.supabaseUrl && CONFIG.supabaseAnonKey) {
+    try {
+      sb = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey);
+    } catch (e) {
+      sb = null;
+    }
+  }
+
+  // ---- 공유 상태 ----
+  var nameMap = {};      // ticker -> name (전체 watchlist)
+  var activeTickers = []; // 활성 watchlist ticker 목록
+  var charts = { price: null, score: null, rsi: null };
+  var currentScreen = "status";
+
+  // ---- 포맷터 ----
+  function fmtPrice(v) {
+    return v == null || isNaN(v) ? "-" : "$" + Number(v).toFixed(2);
+  }
+  function fmtNum(v, d) {
+    if (v == null || isNaN(v)) return "-";
+    return Number(v).toFixed(d == null ? 1 : d);
+  }
+  function fmtPct(v) {
+    if (v == null || isNaN(v)) return "-";
+    return (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%";
+  }
+  function pctClass(v) {
+    if (v == null || isNaN(v)) return "neutral";
+    return v >= 0 ? "pos" : "neg";
+  }
+  function todayUTC() {
+    return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  }
+  function dateMinusDays(days) {
+    var d = new Date();
+    d.setUTCDate(d.getUTCDate() - days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // ---- Supabase 1000행 제한 우회 ----
+  // query: select() 로 시작된 빌더 (.order 등은 미리 적용). 매 루프 .range() 재설정.
+  async function fetchAllPaged(query) {
+    var all = [];
+    var from = 0;
+    while (true) {
+      var res = await query.range(from, from + PAGE_SIZE - 1);
+      if (res.error) throw res.error;
+      var page = res.data || [];
+      for (var i = 0; i < page.length; i++) all.push(page[i]);
+      if (page.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    return all;
+  }
+
+  // ---- weekly_report.build_report_text 와 동일 통계 ----
+  // 평균 = 단순평균, 승률 = 양수비율*100, null 제외
+  function computeStats(rows) {
+    var keys = [
+      [5, "return_5d"],
+      [10, "return_10d"],
+      [20, "return_20d"],
+    ];
+    var out = { total: rows.length, byKey: {} };
+    keys.forEach(function (pair) {
+      var n = pair[0], key = pair[1];
+      var vals = rows
+        .filter(function (r) { return r[key] != null && !isNaN(r[key]); })
+        .map(function (r) { return r[key]; });
+      if (vals.length) {
+        var sum = vals.reduce(function (a, b) { return a + b; }, 0);
+        var win = vals.filter(function (v) { return v > 0; }).length / vals.length * 100;
+        out.byKey[key] = { avg: sum / vals.length, win: win, count: vals.length };
+      } else {
+        out.byKey[key] = null;
+      }
+    });
+    return out;
+  }
+
+  // ---- 로딩/에러 래퍼 ----
+  function runLoad(label, fn, loadingEl, errorEl) {
+    loadingEl.classList.remove("hidden");
+    errorEl.classList.add("hidden");
+    return Promise.resolve()
+      .then(fn)
+      .catch(function (e) {
+        errorEl.textContent = label + " 조회 실패: " + (e && e.message ? e.message : e);
+        errorEl.classList.remove("hidden");
+      })
+      .then(function () {
+        loadingEl.classList.add("hidden");
+      });
+  }
+
+  function showConfigNeeded(errorEl) {
+    errorEl.textContent = "Supabase 설정이 필요합니다. config.example.js 를 config.js 로 복사 후 키를 입력하세요.";
+    errorEl.classList.remove("hidden");
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  // =====================================================================
+  // 초기화
+  // =====================================================================
+  function init() {
+    if (!sb) {
+      $("config-banner").classList.remove("hidden");
+    }
+    if (window.Chart) {
+      Chart.defaults.color = "#98a2b3";
+      Chart.defaults.borderColor = "#2a313d";
+      Chart.defaults.font.family =
+        '-apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", "Noto Sans KR", sans-serif';
+    }
+    bindTabs();
+    bindDetailControls();
+    bindSignalsControls();
+    bindScoreboardControls();
+
+    if (sb) {
+      loadWatchlist()
+        .then(loadStatus)
+        .catch(function (e) {
+          $("status-error").textContent =
+            "watchlist 조회 실패: " + (e && e.message ? e.message : e);
+          $("status-error").classList.remove("hidden");
+        });
+    } else {
+      // 설정 없이도 화면은 렌더링 (빈 상태)
+      $("status-content").classList.remove("hidden");
+      showConfigNeeded($("status-error"));
+    }
+  }
+
+  // ---- watchlist (이름 매핑 + 활성 목록) ----
+  async function loadWatchlist() {
+    var res = await sb.from("watchlist").select("ticker,name,active");
+    if (res.error) throw res.error;
+    var rows = res.data || [];
+    nameMap = {};
+    activeTickers = [];
+    rows.forEach(function (r) {
+      nameMap[r.ticker] = r.name || r.ticker;
+      if (r.active) activeTickers.push(r.ticker);
+    });
+    activeTickers.sort();
+  }
+
+  function tickerLabel(tk) {
+    var nm = nameMap[tk];
+    return nm ? tk + '<span class="nm">' + nm + "</span>" : tk;
+  }
+
+  // =====================================================================
+  // 탭 전환
+  // =====================================================================
+  function bindTabs() {
+    var tabs = $("tabs").querySelectorAll(".tab-btn");
+    tabs.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var screen = btn.getAttribute("data-screen");
+        if (screen === currentScreen) return;
+        // 상세 탭을 떠날 때 차트 정리 (중복 캔버스 버그 방지)
+        if (currentScreen === "detail") destroyCharts();
+        currentScreen = screen;
+        tabs.forEach(function (b) { b.classList.toggle("active", b === btn); });
+        ["status", "scoreboard", "detail", "signals"].forEach(function (s) {
+          $("screen-" + s).classList.toggle("hidden", s !== screen);
+        });
+        if (!sb) {
+          showConfigNeeded($(screen + "-error"));
+          return;
+        }
+        if (screen === "status") loadStatus();
+        else if (screen === "scoreboard") loadScoreboardDates();
+        else if (screen === "detail") loadDetail();
+        else if (screen === "signals") loadSignals();
+      });
+    });
+  }
+
+  function destroyCharts() {
+    Object.keys(charts).forEach(function (k) {
+      if (charts[k]) { charts[k].destroy(); charts[k] = null; }
+    });
+  }
+
+  // =====================================================================
+  // 화면 1: 현황
+  // =====================================================================
+  async function loadStatus() {
+    await runLoad(
+      "daily_data",
+      async function () {
+        // 최신 스캔 날짜
+        var dRes = await sb
+          .from("daily_data")
+          .select("date")
+          .order("date", { ascending: false })
+          .limit(1);
+        if (dRes.error) throw dRes.error;
+        var latest = dRes.data && dRes.data.length ? dRes.data[0].date : null;
+
+        var rows = [];
+        if (latest) {
+          var rRes = await sb.from("daily_data").select("*").eq("date", latest);
+          if (rRes.error) throw rRes.error;
+          rows = rRes.data || [];
+        }
+
+        var candidates = rows
+          .filter(function (r) { return r.score >= SCORE_THRESHOLD; })
+          .sort(function (a, b) { return b.score - a.score; });
+
+        $("status-latest-date").textContent = latest || "데이터 없음";
+        $("status-candidate-count").textContent = candidates.length;
+        $("status-active-count").textContent = activeTickers.length;
+
+        var top = candidates.slice(0, 3);
+        var box = $("status-top-candidates");
+        box.innerHTML = "";
+        if (!top.length) {
+          box.innerHTML = '<div class="empty">해당 날짜 후보 종목이 없습니다.</div>';
+        } else {
+          top.forEach(function (r) {
+            var card = document.createElement("div");
+            card.className = "candidate-card";
+            card.innerHTML =
+              '<div class="ticker">' + r.ticker + "</div>" +
+              '<div class="name">' + (nameMap[r.ticker] || "") + "</div>" +
+              '<div class="metrics">' +
+              '<div class="metric"><div class="m-label">점수</div><div class="m-value">' + r.score + "</div></div>" +
+              '<div class="metric"><div class="m-label">RSI</div><div class="m-value">' + fmtNum(r.rsi) + "</div></div>" +
+              '<div class="metric"><div class="m-label">고점대비</div><div class="m-value ' + pctClass(r.drawdown) + '">' + fmtNum(r.drawdown) + "%</div></div>" +
+              "</div>";
+            box.appendChild(card);
+          });
+        }
+        $("status-content").classList.remove("hidden");
+      },
+      $("status-loading"),
+      $("status-error")
+    );
+  }
+
+  // =====================================================================
+  // 화면 2: 점수판
+  // =====================================================================
+  var SB_COLS = [
+    { key: "ticker", label: "종목", num: false },
+    { key: "score", label: "점수", num: true },
+    { key: "rsi", label: "RSI", num: true },
+    { key: "prev_rsi", label: "전일RSI", num: true },
+    { key: "drawdown", label: "고점대비%", num: true },
+    { key: "ma20", label: "MA20", num: true },
+    { key: "ma50", label: "MA50", num: true },
+    { key: "volume_ratio", label: "거래량비", num: true },
+  ];
+  var sbData = [];
+  var sbSort = { key: "score", dir: "desc" };
+
+  function bindScoreboardControls() {
+    $("scoreboard-date").addEventListener("change", function () {
+      loadScoreboardRows(this.value);
+    });
+    // 헤더 정렬은 행 로드 후 동적 생성
+  }
+
+  async function loadScoreboardDates() {
+    await runLoad(
+      "daily_data(날짜목록)",
+      async function () {
+        // 최근 10개 영업일(중복 제거) — date 전용 1000행 조회 후 dedupe
+        var res = await sb
+          .from("daily_data")
+          .select("date")
+          .order("date", { ascending: false })
+          .limit(1000);
+        if (res.error) throw res.error;
+        var seen = {};
+        var dates = [];
+        (res.data || []).forEach(function (r) {
+          if (!seen[r.date]) { seen[r.date] = true; dates.push(r.date); }
+        });
+        dates = dates.slice(0, 10);
+
+        var sel = $("scoreboard-date");
+        sel.innerHTML = "";
+        if (!dates.length) {
+          sel.innerHTML = '<option value="">날짜 없음</option>';
+          return;
+        }
+        dates.forEach(function (d) {
+          var o = document.createElement("option");
+          o.value = d; o.textContent = d;
+          sel.appendChild(o);
+        });
+        loadScoreboardRows(dates[0]);
+      },
+      $("scoreboard-loading"),
+      $("scoreboard-error")
+    );
+  }
+
+  async function loadScoreboardRows(date) {
+    if (!date) return;
+    await runLoad(
+      "daily_data(" + date + ")",
+      async function () {
+        var res = await sb.from("daily_data").select("*").eq("date", date);
+        if (res.error) throw res.error;
+        sbData = res.data || [];
+        renderScoreboard();
+        $("scoreboard-content").classList.remove("hidden");
+      },
+      $("scoreboard-loading"),
+      $("scoreboard-error")
+    );
+  }
+
+  function renderScoreboard() {
+    // 헤더
+    var head = $("scoreboard-head");
+    head.innerHTML = "";
+    SB_COLS.forEach(function (col) {
+      var th = document.createElement("th");
+      th.textContent = col.label;
+      if (sbSort.key === col.key) {
+        var arrow = document.createElement("span");
+        arrow.className = "arrow";
+        arrow.textContent = sbSort.dir === "asc" ? "▲" : "▼";
+        th.appendChild(arrow);
+      }
+      th.addEventListener("click", function () {
+        if (sbSort.key === col.key) {
+          sbSort.dir = sbSort.dir === "asc" ? "desc" : "asc";
+        } else {
+          sbSort.key = col.key;
+          sbSort.dir = col.num ? "desc" : "asc";
+        }
+        renderScoreboard();
+      });
+      head.appendChild(th);
+    });
+
+    // 정렬
+    var sorted = sbData.slice().sort(function (a, b) {
+      var av = a[sbSort.key], bv = b[sbSort.key];
+      if (typeof av === "string") {
+        return sbSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      av = av == null ? -Infinity : av;
+      bv = bv == null ? -Infinity : bv;
+      return sbSort.dir === "asc" ? av - bv : bv - av;
+    });
+
+    var body = $("scoreboard-body");
+    body.innerHTML = "";
+    if (!sorted.length) {
+      body.innerHTML = '<tr><td colspan="' + SB_COLS.length + '" class="empty">데이터가 없습니다.</td></tr>';
+      return;
+    }
+    sorted.forEach(function (r) {
+      var tr = document.createElement("tr");
+      if (r.score >= SCORE_THRESHOLD) tr.className = "candidate";
+      SB_COLS.forEach(function (col) {
+        var td = document.createElement("td");
+        if (col.key === "ticker") {
+          td.className = "ticker-cell";
+          td.innerHTML = tickerLabel(r.ticker);
+        } else if (col.key === "drawdown") {
+          td.className = pctClass(r.drawdown);
+          td.textContent = fmtNum(r.drawdown) + "%";
+        } else if (col.key === "volume_ratio") {
+          td.textContent = fmtNum(r.volume_ratio, 2);
+        } else if (col.key === "score") {
+          td.textContent = r.score;
+        } else {
+          td.textContent = fmtNum(r[col.key]);
+        }
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  // =====================================================================
+  // 화면 3: 상세
+  // =====================================================================
+  var detailPeriod = 3; // 개월
+
+  function bindDetailControls() {
+    $("detail-ticker").addEventListener("change", function () {
+      loadDetail();
+    });
+    $("detail-periods").querySelectorAll("button").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        detailPeriod = parseInt(btn.getAttribute("data-period"), 10);
+        $("detail-periods").querySelectorAll("button").forEach(function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+        loadDetail();
+      });
+    });
+  }
+
+  async function loadDetail() {
+    await runLoad(
+      "daily_data(시계열)",
+      async function () {
+        // 종목 드롭다운 (활성 순)
+        var sel = $("detail-ticker");
+        if (!sel.options.length) {
+          activeTickers.forEach(function (tk) {
+            var o = document.createElement("option");
+            o.value = tk; o.textContent = tk + (nameMap[tk] ? " · " + nameMap[tk] : "");
+            sel.appendChild(o);
+          });
+        }
+        var ticker = sel.value;
+        if (!ticker) {
+          $("detail-content").classList.remove("hidden");
+          return;
+        }
+
+        // 시계열 전체 조회 (페이지네이션) 후 오름차순 정렬
+        var rows = await fetchAllPaged(
+          sb.from("daily_data").select("*").eq("ticker", ticker).order("date", { ascending: true })
+        );
+        var cutoff = dateMinusDays(detailPeriod * 30);
+        rows = rows.filter(function (r) { return r.date >= cutoff; });
+
+        if (!rows.length) {
+          destroyCharts();
+          $("detail-content").classList.remove("hidden");
+          return;
+        }
+        renderDetailCharts(rows);
+        $("detail-content").classList.remove("hidden");
+      },
+      $("detail-loading"),
+      $("detail-error")
+    );
+  }
+
+  function baseLineOpts() {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { boxWidth: 12 } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
+      },
+    };
+  }
+
+  function renderDetailCharts(rows) {
+    destroyCharts();
+    var labels = rows.map(function (r) { return r.date; });
+
+    // ① 가격 + MA20/MA50
+    charts.price = new Chart($("chart-price"), {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [
+          { label: "가격", data: rows.map(function (r) { return r.price; }), borderColor: "#5b8def", borderWidth: 2, pointRadius: 0, tension: 0.1 },
+          { label: "MA20", data: rows.map(function (r) { return r.ma20; }), borderColor: "#f5a623", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+          { label: "MA50", data: rows.map(function (r) { return r.ma50; }), borderColor: "#2ecc71", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+        ],
+      },
+      options: baseLineOpts(),
+    });
+
+    // ② 점수
+    charts.score = new Chart($("chart-score"), {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [
+          { label: "점수", data: rows.map(function (r) { return r.score; }), borderColor: "#b07cff", borderWidth: 2, pointRadius: 0, tension: 0.1, fill: false },
+        ],
+      },
+      options: Object.assign(baseLineOpts(), {
+        scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true } }, y: { suggestedMin: 0, suggestedMax: 100 } },
+      }),
+    });
+
+    // ③ RSI + 참조선 35/40
+    var ref35 = labels.map(function () { return 35; });
+    var ref40 = labels.map(function () { return 40; });
+    charts.rsi = new Chart($("chart-rsi"), {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [
+          { label: "RSI", data: rows.map(function (r) { return r.rsi; }), borderColor: "#5b8def", borderWidth: 2, pointRadius: 0, tension: 0.1, fill: false, order: 0 },
+          { label: "과매도 35", data: ref35, borderColor: "rgba(255,92,92,0.7)", borderWidth: 1, borderDash: [5, 4], pointRadius: 0, fill: false, order: 1 },
+          { label: "과매도 40", data: ref40, borderColor: "rgba(245,166,35,0.7)", borderWidth: 1, borderDash: [5, 4], pointRadius: 0, fill: false, order: 1 },
+        ],
+      },
+      options: Object.assign(baseLineOpts(), {
+        scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true } }, y: { suggestedMin: 0, suggestedMax: 100 } },
+      }),
+    });
+  }
+
+  // =====================================================================
+  // 화면 4: 신호·성과
+  // =====================================================================
+  function bindSignalsControls() {
+    $("signals-period").addEventListener("change", function () {
+      loadSignals();
+    });
+  }
+
+  async function loadSignals() {
+    await runLoad(
+      "signals",
+      async function () {
+        var weeks = parseInt($("signals-period").value, 10);
+        var rows = await fetchAllPaged(sb.from("signals").select("*").order("signal_date", { ascending: false }));
+
+        // 기간 필터: 오늘(UTC) - N주, signal_date >= cutoff (문자열 비교)
+        if (weeks > 0) {
+          var cutoff = dateMinusDays(weeks * 7);
+          rows = rows.filter(function (r) {
+            return String(r.signal_date).slice(0, 10) >= cutoff;
+          });
+        }
+
+        var stats = computeStats(rows);
+        renderSignalsStats(stats);
+        renderSignalsTable(rows);
+        $("signals-content").classList.remove("hidden");
+      },
+      $("signals-loading"),
+      $("signals-error")
+    );
+  }
+
+  function renderSignalsStats(stats) {
+    var box = $("signals-stats");
+    box.innerHTML = "";
+    function card(label, value, cls) {
+      var d = document.createElement("div");
+      d.className = "stat-card";
+      d.innerHTML =
+        '<div class="stat-label">' + label + "</div>" +
+        '<div class="stat-value ' + (cls || "") + '">' + value + "</div>";
+      box.appendChild(d);
+    }
+    card("누적 신호 수", stats.total);
+    [["return_5d", "평균수익률 5일"], ["return_10d", "평균수익률 10일"], ["return_20d", "평균수익률 20일"]].forEach(function (p) {
+      var s = stats.byKey[p[0]];
+      if (s) card(p[1], fmtPct(s.avg), pctClass(s.avg));
+      else card(p[1], "데이터 부족", "neutral");
+    });
+    var w5 = stats.byKey["return_5d"];
+    card("승률 (5일 기준)", w5 ? w5.win.toFixed(1) + "%" : "-", w5 && w5.win >= 50 ? "pos" : "neg");
+  }
+
+  function renderSignalsTable(rows) {
+    var body = $("signals-body");
+    body.innerHTML = "";
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">해당 기간 신호가 없습니다.</td></tr>';
+      return;
+    }
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      function cell(html, cls) {
+        var td = document.createElement("td");
+        if (cls) td.className = cls;
+        td.innerHTML = html;
+        return td;
+      }
+      tr.appendChild(cell(String(r.signal_date).slice(0, 10)));
+      var tdTk = document.createElement("td");
+      tdTk.className = "ticker-cell";
+      tdTk.innerHTML = tickerLabel(r.ticker);
+      tr.appendChild(tdTk);
+      tr.appendChild(cell(fmtPrice(r.signal_price)));
+      tr.appendChild(cell(String(r.score)));
+      [r.return_5d, r.return_10d, r.return_20d].forEach(function (v) {
+        if (v == null || isNaN(v)) tr.appendChild(cell("대기", "neutral"));
+        else tr.appendChild(cell(fmtPct(v), pctClass(v)));
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  // ---- 부트스트랩 ----
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

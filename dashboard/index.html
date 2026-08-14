@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>미국주식 매수신호 대시보드</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- CDN: 빌드 도구 없이 file:// 에서도 로딩되도록 UMD 버전 사용 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>미국주식 매수신호 대시보드</h1>
+    <p class="subtitle">Supabase 기반 정적 대시보드 · 기술적 신호 모니터링</p>
+  </header>
+
+  <!-- 설정 필요 안내 (config.js 없을 때 표시) -->
+  <div id="config-banner" class="config-banner hidden">
+    ⚙️ <strong>설정 필요:</strong> <code>config.example.js</code>를 <code>config.js</code>로 복사한 뒤
+    Supabase URL과 <code>anon public</code> 키를 입력하세요. 설정이 없어도 화면은 표시되나 데이터는 조회되지 않습니다.
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn active" data-screen="status">현황</button>
+    <button class="tab-btn" data-screen="scoreboard">점수판</button>
+    <button class="tab-btn" data-screen="detail">상세</button>
+    <button class="tab-btn" data-screen="signals">신호·성과</button>
+  </nav>
+
+  <main>
+    <!-- 화면 1: 현황 -->
+    <section id="screen-status" class="screen">
+      <div id="status-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="status-error" class="error hidden"></div>
+      <div id="status-content" class="hidden">
+        <div class="stat-cards">
+          <div class="stat-card">
+            <div class="stat-label">최신 스캔 날짜</div>
+            <div class="stat-value" id="status-latest-date">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">후보 (점수 ≥ 65)</div>
+            <div class="stat-value" id="status-candidate-count">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">활성 watchlist</div>
+            <div class="stat-value" id="status-active-count">-</div>
+          </div>
+        </div>
+        <h2 style="font-size:15px;margin:6px 0 12px;">후보 상위 3종목</h2>
+        <div class="candidate-cards" id="status-top-candidates"></div>
+      </div>
+    </section>
+
+    <!-- 화면 2: 점수판 -->
+    <section id="screen-scoreboard" class="screen hidden">
+      <div class="toolbar">
+        <label>날짜
+          <select id="scoreboard-date"></select>
+        </label>
+      </div>
+      <div id="scoreboard-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="scoreboard-error" class="error hidden"></div>
+      <div id="scoreboard-content" class="hidden">
+        <div class="table-wrap">
+          <table id="scoreboard-table">
+            <thead><tr id="scoreboard-head"></tr></thead>
+            <tbody id="scoreboard-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 화면 3: 상세 -->
+    <section id="screen-detail" class="screen hidden">
+      <div class="toolbar">
+        <label>종목
+          <select id="detail-ticker"></select>
+        </label>
+        <div class="period-buttons" id="detail-periods">
+          <button data-period="1">1개월</button>
+          <button data-period="3" class="active">3개월</button>
+          <button data-period="6">6개월</button>
+        </div>
+      </div>
+      <div id="detail-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="detail-error" class="error hidden"></div>
+      <div id="detail-content" class="hidden charts">
+        <div class="chart-box">
+          <h3>가격 + MA20 / MA50</h3>
+          <div class="chart-canvas-wrap"><canvas id="chart-price"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <h3>점수</h3>
+          <div class="chart-canvas-wrap"><canvas id="chart-score"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <h3>RSI (참조선 35 / 40)</h3>
+          <div class="chart-canvas-wrap"><canvas id="chart-rsi"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 화면 4: 신호·성과 -->
+    <section id="screen-signals" class="screen hidden">
+      <div class="toolbar">
+        <label>기간
+          <select id="signals-period">
+            <option value="0">전체</option>
+            <option value="4">최근 4주</option>
+            <option value="12">최근 12주</option>
+          </select>
+        </label>
+      </div>
+      <div id="signals-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="signals-error" class="error hidden"></div>
+      <div id="signals-content" class="hidden">
+        <div class="stat-cards" id="signals-stats"></div>
+        <div class="table-wrap">
+          <table id="signals-table">
+            <thead>
+              <tr>
+                <th>신호일</th>
+                <th>종목</th>
+                <th>신호가</th>
+                <th>점수</th>
+                <th>수익률 5일</th>
+                <th>수익률 10일</th>
+                <th>수익률 20일</th>
+              </tr>
+            </thead>
+            <tbody id="signals-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    기술적 신호는 매수 추천이나 수익을 보장하지 않습니다.
+  </footer>
+
+  <!-- config.js: 없으면 404로 떨어지나 onerror로 앱이 죽지 않게 처리 -->
+  <script src="config.js" onerror="window.__CONFIG_MISSING=true"></script>
+  <script src="app.js"></script>
+</body>
+</html>
