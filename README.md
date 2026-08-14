@@ -89,6 +89,7 @@ python report.py --weeks 4   # 최근 4주만 집계 (기본: 전체)
 python -m pytest tests/     # 테스트 실행 (pip install -r requirements-dev.txt)
 
 # 임계값별 백테스트 (fetch 1회 + 지표 선계산, lookahead bias 없음)
+# 종목은 스캐너와 동일하게 Supabase watchlist 테이블 우선(env 미설정 시 watchlist.csv 폴백)
 python backtest.py                              # 전체 watchlist, 기본 6개월, 55/60/65점 비교
 python backtest.py --thresholds 50,55,60,65     # 임계값 조합 지정
 python backtest.py --weeks 12                   # 기간 지정 (기본 26주)

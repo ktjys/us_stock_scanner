@@ -24,6 +24,9 @@ jobs:
       - run: mkdir -p dashboard/data
 
       - run: python backtest.py --json dashboard/data/backtest.json
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
       - uses: stefanzweifel/git-auto-commit-action@v5
         with:

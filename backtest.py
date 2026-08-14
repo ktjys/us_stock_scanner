@@ -11,21 +11,35 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pandas as pd
 
-from stock_scanner import ALERT_SCORE, WATCHLIST_FILE, fetch_history, rsi, score_signal
+from stock_scanner import (ALERT_SCORE, get_db, load_watchlist,
+                           fetch_history, rsi, score_signal)
 
 RET_HORIZONS = (5, 10, 20)
 DEFAULT_THRESHOLDS = f"{ALERT_SCORE},60,55"
 
 
-def _load_tickers(tickers_arg: str | None) -> list[str]:
-    """--tickers가 없으면 watchlist.csv의 ticker 컬럼을 그대로 읽는다."""
+def _get_db_if_available() -> Any:
+    """SUPABASE_URL/KEY env가 있으면 DB 클라이언트, 없으면 None (CSV 폴백)."""
+    if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY"):
+        try:
+            return get_db()
+        except Exception as e:  # noqa: BLE001 - 인증 실패 등은 CSV로 폴백
+            print(f"경고: DB 연결 실패, CSV로 대체 - {e}", file=sys.stderr)
+    return None
+
+
+def _load_tickers(tickers_arg: str | None, db: Any | None = None) -> list[str]:
+    """--tickers가 없으면 스캐너와 동일하게 Supabase watchlist를 우선 사용한다.
+
+    load_watchlist(db): 테이블 우선(active만), 비어 있거나 db=None이면 CSV.
+    """
     if tickers_arg:
         return [t.strip().upper() for t in tickers_arg.split(",") if t.strip()]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), WATCHLIST_FILE)
-    return pd.read_csv(path)["ticker"].tolist()
+    return load_watchlist(db)
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -196,7 +210,9 @@ def main() -> None:
     if not thresholds:
         parser.error("--thresholds는 1개 이상의 정수가 필요합니다")
 
-    tickers = _load_tickers(args.tickers)
+    db = _get_db_if_available()
+    tickers = _load_tickers(args.tickers, db)
+    print(f"백테스트 대상 {len(tickers)}개: {', '.join(tickers)}", file=sys.stderr)
     dfs: dict[str, pd.DataFrame] = {}
     for ticker in tickers:
         try:
