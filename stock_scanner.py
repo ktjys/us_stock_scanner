@@ -5,6 +5,7 @@ GitHub Actions가 평일마다 실행해 watchlist 종목의 기술적 신호를
 신호의 5/10/20일 수익률은 이후 배치로 갱신된다.
 """
 
+import argparse
 import os
 import sys
 import time
