@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -24,6 +25,7 @@ ALERT_SCORE = 65
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
+SCAN_WORKERS = 8  # 종목별 병렬 분석 워커 수 (Yahoo 스로틀링을 겸함)
 
 _db: Any = None
 
@@ -389,22 +391,28 @@ def scan(date: str | None = None,
         print(f"[{date}] 미국 시장 휴일 — 스캔 생략")
         return [], []
     db = get_db() if persist else None
-    candidates: list[dict[str, Any]] = []
-    failures: list[str] = []
+    tickers = load_watchlist(db)
 
-    for ticker in load_watchlist(db):
+    def _process(ticker: str) -> tuple[str, dict[str, Any] | None, Exception | None]:
         try:
             x = analyze(ticker, date)
-            if x:
-                if persist:
-                    save_daily(x, date)
-                    save_signal(x, date, threshold)
-                if x["score"] >= threshold:
-                    candidates.append(x)
-            time.sleep(1)
+            if x and persist:
+                save_daily(x, date)
+                save_signal(x, date, threshold)
+            return ticker, x, None
         except Exception as e:
-            failures.append(ticker)
-            print(ticker, "오류:", e)
+            return ticker, None, e
+
+    candidates: list[dict[str, Any]] = []
+    failures: list[str] = []
+    # 종목별 분석을 병렬로 수행한다. 워커 수 제한이 Yahoo 스로틀링을 대신한다.
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
+        for ticker, x, err in pool.map(_process, tickers):
+            if err is not None:
+                failures.append(ticker)
+                print(ticker, "오류:", err)
+            elif x and x["score"] >= threshold:
+                candidates.append(x)
 
     if persist:
         update_returns()

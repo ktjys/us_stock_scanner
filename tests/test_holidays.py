@@ -109,7 +109,6 @@ def test_scan_proceeds_on_normal_weekday(monkeypatch):
     monkeypatch.setattr("stock_scanner.is_us_market_holiday", lambda d: False)
     monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["AAPL"])
-    monkeypatch.setattr("stock_scanner.time.sleep", lambda s: None)
 
     cands, failures = scan(persist=False, notify=False)
     assert [c["ticker"] for c in cands] == ["AAPL"]

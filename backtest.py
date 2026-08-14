@@ -84,11 +84,17 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
     for i in range(len(df)):
         if not mask[i]:
             continue
-        if pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma50"].iloc[i]):
+        if i == 0:
+            continue
+        # 실전 compute_signal의 dropna()와 동일 조건: 5개 지표 + 직전 RSI가
+        # 모두 유효해야 스코어링한다 (어느 하나라도 NaN이면 스킵).
+        if (pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma20"].iloc[i])
+                or pd.isna(df["ma50"].iloc[i]) or pd.isna(df["high60"].iloc[i])
+                or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])):
             continue
         price = float(close.iloc[i])
         rv = float(df["rsi"].iloc[i])
-        prev = float(df["rsi"].iloc[i - 1]) if i > 0 else float("nan")
+        prev = float(df["rsi"].iloc[i - 1])
         ma20 = float(df["ma20"].iloc[i])
         ma50 = float(df["ma50"].iloc[i])
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
