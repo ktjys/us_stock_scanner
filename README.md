@@ -42,10 +42,12 @@ RSI 구간은 상호배타적이라 중복 가산되지 않습니다. RSI<40과 
 가산되던 기존 방식과 달리, RSI 하나로 점수가 과도하게 치우치지 않습니다.
 
 ## 5. watchlist 관리
-- 기본값: `watchlist.csv` (저장소에 커밋된 파일)
-- Supabase `watchlist` 테이블(ticker, name, active)에 종목이 있으면 그 테이블을
-  우선 사용합니다. `active = false`로 두면 스캔에서 제외됩니다.
+- 기본값: `watchlist.csv` (저장소에 커밋된 파일) - Supabase 테이블이 비어 있을 때 시드되는 "시드 전용" 파일
+- 실제 스캔 대상은 Supabase `watchlist` 테이블(ticker, name, active)이 기준이며,
+  `active = false`로 두면 스캔에서 제외됩니다.
 - 테이블이 없거나 비어 있으면 `watchlist.csv` 내용으로 자동 시드 후 사용합니다.
+- CLI로 종목을 추가/제거한 뒤 CSV를 최신 상태로 유지하려면 `./watchlist.sh sync-csv` 실행
+- backtest.py도 또한 Supabase 테이블을 우선으로 함
 
 ### CLI로 관리 (권장 - SQL 불필요)
 ```bash

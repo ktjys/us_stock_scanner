@@ -171,6 +171,25 @@ def cmd_set_active(db: Any, tickers: list[str], active: bool) -> int:
     return 0
 
 
+def cmd_sync_csv(db: Any) -> int:
+    rows = (db.table("watchlist")
+            .select("ticker,name,active")
+            .eq("active", True)
+            .order("ticker")
+            .execute().data or [])
+
+    if not rows:
+        print("📭 watchlist 테이블에 active=True 종목이 없어 CSV를 쓰지 않습니다.")
+        print("   종목을 add하거나 activate로 활성화한 뒤 다시 sync-csv를 실행하세요.")
+        return 0
+
+    payload = [(r["ticker"], r.get("name") or "") for r in rows]
+    df = pd.DataFrame(payload, columns=["ticker", "name"])
+    df.to_csv(WATCHLIST_FILE, index=False)
+    print(f"watchlist.csv 갱신 완료 ({len(rows)}종목)")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="watchlist 종목 관리")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -185,6 +204,8 @@ def main() -> None:
         p = sub.add_parser(name, help=help_)
         p.add_argument("tickers", nargs="+")
 
+    p_sync = sub.add_parser("sync-csv", help="DB 기준으로 watchlist.csv 동기화")
+
     args = parser.parse_args()
     db = _get_db()
     _ensure_table(db)
@@ -196,6 +217,8 @@ def main() -> None:
         ret = cmd_add(db, args.items)
     elif args.command == "remove":
         ret = cmd_set_active(db, args.tickers, active=False)
+    elif args.command == "sync-csv":
+        ret = cmd_sync_csv(db)
     else:  # activate
         ret = cmd_set_active(db, args.tickers, active=True)
     sys.exit(ret)

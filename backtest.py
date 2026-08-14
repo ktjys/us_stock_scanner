@@ -109,6 +109,41 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
     return records
 
 
+def _run_backtest(thresholds: list[int], weeks: int,
+                  tickers: list[str]) -> dict:
+    """fetch 루프 + 백테스트 실행 (main과 build_backtest_summary 공용).
+
+    fetch 실패 종목은 경고 후 스킵하고, 데이터가 하나도 없으면
+    records/tickers가 빈 dict를 반환한다.
+    """
+    dfs: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        try:
+            df = fetch_history(ticker)
+        except Exception as e:
+            print(f"경고: {ticker} fetch 실패 - {e}", file=sys.stderr)
+            continue
+        if df is None or df.empty:
+            print(f"경고: {ticker} 데이터 없음", file=sys.stderr)
+            continue
+        dfs[ticker] = df
+        print(f"{ticker} fetch 완료", file=sys.stderr)
+
+    if not dfs:
+        return {"records": [], "tickers": [], "start": "", "end": "", "weeks": weeks}
+
+    end = min(df.index.max() for df in dfs.values())
+    start = end - timedelta(weeks=weeks)
+    start_str, end_str = str(start.date()), str(end.date())
+
+    records: list[dict] = []
+    for ticker, df in dfs.items():
+        records.extend(_backtest_ticker(ticker, df, thresholds, start_str, end_str))
+
+    return {"records": records, "tickers": list(dfs),
+            "start": start_str, "end": end_str, "weeks": weeks}
+
+
 def _fmt_ret(v: float | None) -> str:
     return "-" if v is None else f"{v:+.2f}%"
 
@@ -145,6 +180,27 @@ def _summarize(records: list[dict], thresholds: list[int]) -> pd.DataFrame:
             "표본수": len(rets[5]),
         })
     return pd.DataFrame(rows)
+
+
+def build_backtest_summary(weeks: int = 26, tickers: str | None = None) -> str:
+    """주간 리포트용 백테스트 요약 텍스트 (실패 시 빈 문자열)."""
+    try:
+        thresholds = sorted({int(t) for t in DEFAULT_THRESHOLDS.split(",")},
+                            reverse=True)
+        db = _get_db_if_available()
+        result = _run_backtest(thresholds, weeks, _load_tickers(tickers, db))
+        if not result["tickers"]:
+            return "백테스트 데이터 없음"
+        lines = [f"📊 백테스트 (최근 {weeks}주, {len(result['tickers'])}종목)"]
+        for _, row in _summarize(result["records"], thresholds).iterrows():
+            win = row["승률(5일)"]
+            if win == "-":
+                lines.append(f"{row['threshold']}점: {row['신호수']}건 | 데이터 부족")
+            else:
+                lines.append(f"{row['threshold']}점: {row['신호수']}건 | 승률 {win}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _build_json_report(records: list[dict], thresholds: list[int], tickers: list[str],
@@ -213,37 +269,19 @@ def main() -> None:
     db = _get_db_if_available()
     tickers = _load_tickers(args.tickers, db)
     print(f"백테스트 대상 {len(tickers)}개: {', '.join(tickers)}", file=sys.stderr)
-    dfs: dict[str, pd.DataFrame] = {}
-    for ticker in tickers:
-        try:
-            df = fetch_history(ticker)
-        except Exception as e:
-            print(f"경고: {ticker} fetch 실패 - {e}", file=sys.stderr)
-            continue
-        if df is None or df.empty:
-            print(f"경고: {ticker} 데이터 없음", file=sys.stderr)
-            continue
-        dfs[ticker] = df
-        print(f"{ticker} fetch 완료", file=sys.stderr)
+    result = _run_backtest(thresholds, args.weeks, tickers)
 
-    if not dfs:
+    if not result["tickers"]:
         print("백테스트할 데이터 없음", file=sys.stderr)
         sys.exit(1)
 
-    end = min(df.index.max() for df in dfs.values())
-    start = end - timedelta(weeks=args.weeks)
-    start_str, end_str = str(start.date()), str(end.date())
-
-    records: list[dict] = []
-    for ticker, df in dfs.items():
-        records.extend(_backtest_ticker(ticker, df, thresholds, start_str, end_str))
-
-    print(f"=== 백테스트 결과 (기간: {start_str} ~ {end_str}, ticker {len(dfs)}개) ===")
-    print(_summarize(records, thresholds).to_string(index=False))
+    print(f"=== 백테스트 결과 (기간: {result['start']} ~ {result['end']}, "
+          f"ticker {len(result['tickers'])}개) ===")
+    print(_summarize(result["records"], thresholds).to_string(index=False))
 
     if args.json:
-        report = _build_json_report(records, thresholds, list(dfs),
-                                    start_str, end_str, args.weeks)
+        report = _build_json_report(result["records"], thresholds, result["tickers"],
+                                    result["start"], result["end"], args.weeks)
         os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
@@ -251,7 +289,7 @@ def main() -> None:
 
     if args.verbose:
         uniq = {}
-        for r in sorted(records, key=lambda r: (r["date"], r["ticker"], -r["score"])):
+        for r in sorted(result["records"], key=lambda r: (r["date"], r["ticker"], -r["score"])):
             uniq.setdefault((r["date"], r["ticker"]), r)
         print("\n=== 신호 상세 ===")
         if uniq:

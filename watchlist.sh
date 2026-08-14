@@ -6,6 +6,7 @@
 #   ./watchlist.sh add TSLA AMD Tesla          # 종목 추가 (코드/이름 자동 검증·조회)
 #   ./watchlist.sh remove VOO QQQ              # 스캔에서 제외 (비활성화)
 #   ./watchlist.sh activate TSLA               # 다시 활성화
+#   ./watchlist.sh sync-csv                     # DB 기준으로 watchlist.csv 동기화
 set -euo pipefail
 cd "$(dirname "$0")"
 

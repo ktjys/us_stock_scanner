@@ -1,6 +1,6 @@
 """backtest.py JSON 리포트 생성 테스트 (네트워크 fetch 없음)."""
 
-from backtest import _build_json_report
+from backtest import _build_json_report, build_backtest_summary
 
 
 def test_json_report_schema_and_values():
@@ -76,3 +76,37 @@ def test_json_report_empty_samples_and_dedup_highest_score():
     aapl = next(s for s in report["recent_signals"] if s["ticker"] == "AAPL")
     assert aapl["score"] == 70
     assert aapl["ret5"] is None
+
+
+def test_build_backtest_summary_format(monkeypatch):
+    fake = {
+        "records": [
+            {"threshold": 65, "ret5": 1.0, "ret10": 2.0, "ret20": 3.0},
+            {"threshold": 65, "ret5": -2.0, "ret10": -1.0, "ret20": 0.0},
+            {"threshold": 60, "ret5": None, "ret10": None, "ret20": None},
+            {"threshold": 60, "ret5": None, "ret10": None, "ret20": None},
+        ],
+        "tickers": ["AAPL", "MSFT"],
+        "start": "2026-02-01", "end": "2026-08-01", "weeks": 26,
+    }
+    monkeypatch.setattr("backtest._run_backtest",
+                        lambda thresholds, weeks, tickers: fake)
+    text = build_backtest_summary(weeks=26)
+    assert "📊 백테스트 (최근 26주, 2종목)" in text
+    assert "65점: 2건 | 승률 50.0%" in text
+    assert "60점: 2건 | 데이터 부족" in text
+
+
+def test_build_backtest_summary_no_data(monkeypatch):
+    monkeypatch.setattr("backtest._run_backtest",
+                        lambda *a, **k: {"records": [], "tickers": [],
+                                         "start": "", "end": "", "weeks": 26})
+    assert build_backtest_summary() == "백테스트 데이터 없음"
+
+
+def test_build_backtest_summary_exception_returns_empty(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("backtest._run_backtest", boom)
+    assert build_backtest_summary() == ""

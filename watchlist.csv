@@ -1,11 +1,22 @@
 ticker,name
 AAPL,Apple
-MSFT,Microsoft
-GOOGL,Alphabet
 AMZN,Amazon
-NVDA,NVIDIA
-META,Meta
 AVGO,Broadcom
+GOOGL,Alphabet
+IBM,International Business Machines Corporation
+JEPI,JPMorgan Equity Premium Income ETF
+JEPQ,JPMorgan Nasdaq Equity Premium Income ETF
+META,Meta
+MSFT,Microsoft
+NVDA,NVIDIA
+OKLO,Oklo Inc.
 ORCL,Oracle
+QQQM,Invesco NASDAQ 100 ETF
+SCHD,Schwab U.S. Dividend Equity ETF
+SCHG,Schwab U.S. Large-Cap Growth ETF
+SMH,VanEck Semiconductor ETF
+SOXX,iShares Semiconductor ETF
+SPCX,Space Exploration Technologies Corp.
+TSLA,"Tesla, Inc."
+V,Visa Inc.
 VOO,Vanguard S&P 500 ETF
-QQQ,Invesco QQQ
