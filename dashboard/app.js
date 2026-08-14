@@ -10,8 +10,9 @@
 (function () {
   "use strict";
 
-  var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
-  var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
+var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
+var NEAR_THRESHOLD = 60;  // 근접 후보 임계점 (60~64점)
+var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
   // ---- 설정 로드 (config.js 가 window.DASHBOARD_CONFIG 로 노출) ----
   var CONFIG = window.DASHBOARD_CONFIG || null;
@@ -184,9 +185,10 @@
         if (currentScreen === "detail") destroyCharts();
         currentScreen = screen;
         tabs.forEach(function (b) { b.classList.toggle("active", b === btn); });
-        ["status", "scoreboard", "detail", "signals"].forEach(function (s) {
+        ["status", "scoreboard", "detail", "signals", "backtest"].forEach(function (s) {
           $("screen-" + s).classList.toggle("hidden", s !== screen);
         });
+        if (screen === "backtest") { loadBacktest(); return; }
         if (!sb) {
           showConfigNeeded($(screen + "-error"));
           return;
@@ -255,6 +257,34 @@
               "</div>";
             box.appendChild(card);
           });
+        }
+        // ---- 근접 후보 (60~64점) 섹션 ----
+        var nearCandidates = rows
+          .filter(function (r) { return r.score >= NEAR_THRESHOLD && r.score < SCORE_THRESHOLD; })
+          .sort(function (a, b) { return b.score - a.score; });
+
+        var nearTitle = $("status-near-title");
+        var nearBox = $("status-near-candidates");
+
+        if (nearCandidates.length) {
+          nearTitle.classList.remove("hidden");
+          nearBox.innerHTML = "";
+          nearCandidates.slice(0, 3).forEach(function (r) {
+            var card = document.createElement("div");
+            card.className = "candidate-card near";
+            card.innerHTML =
+              '<div class="ticker">' + r.ticker + "</div>" +
+              '<div class="name">' + (nameMap[r.ticker] || "") + "</div>" +
+              '<div class="metrics">' +
+              '<div class="metric"><div class="m-label">점수</div><div class="m-value">' + r.score + "</div></div>" +
+              '<div class="metric"><div class="m-label">RSI</div><div class="m-value">' + fmtNum(r.rsi) + "</div></div>" +
+              '<div class="metric"><div class="m-label">고점대비</div><div class="m-value ' + pctClass(r.drawdown) + '">' + fmtNum(r.drawdown) + "%</div></div>" +
+              "</div>";
+            nearBox.appendChild(card);
+          });
+        } else {
+          nearTitle.classList.add("hidden");
+          nearBox.innerHTML = "";
         }
         $("status-content").classList.remove("hidden");
       },
@@ -605,6 +635,161 @@
       tr.appendChild(cell(String(r.score)));
       [r.return_5d, r.return_10d, r.return_20d].forEach(function (v) {
         if (v == null || isNaN(v)) tr.appendChild(cell("대기", "neutral"));
+        else tr.appendChild(cell(fmtPct(v), pctClass(v)));
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  // =====================================================================
+  // 화면 5: 백테스트 (정적 JSON, Supabase 불함)
+  // =====================================================================
+  var backtestChart = null;
+  var backtestLoaded = false;
+
+  function loadBacktest() {
+    if (backtestLoaded) return;
+    backtestLoaded = true;
+    var loadingEl = $("backtest-loading");
+    var emptyEl = $("backtest-empty");
+    loadingEl.classList.remove("hidden");
+    emptyEl.classList.add("hidden");
+    fetch("data/backtest.json")
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        loadingEl.classList.add("hidden");
+        if (!data || !data.thresholds || !data.thresholds.length) {
+          emptyEl.classList.remove("hidden");
+          return;
+        }
+        renderBacktest(data);
+        $("backtest-content").classList.remove("hidden");
+      })
+      .catch(function () {
+        loadingEl.classList.add("hidden");
+        backtestLoaded = false;
+        emptyEl.classList.remove("hidden");
+      });
+  }
+
+  function renderBacktest(data) {
+    var info = $("backtest-info");
+    var parts = [];
+    if (data.generated_at) {
+      var d = new Date(data.generated_at);
+      parts.push("생성: " + (isNaN(d.getTime()) ? data.generated_at : d.toLocaleString()));
+    }
+    if (data.period_start && data.period_end) {
+      parts.push("기간: " + data.period_start + " ~ " + data.period_end);
+    }
+    if (data.ticker_count != null) parts.push("종목 수: " + data.ticker_count);
+    parts.push("주 1회 자동 갱신");
+    info.innerHTML = parts.map(function (p) { return "<span>" + p + "</span>"; }).join("");
+
+    renderBacktestChart(data.thresholds);
+    renderBacktestThresholdTable(data.thresholds);
+    renderBacktestRecentTable(data.recent_signals || []);
+  }
+
+  function renderBacktestChart(thresholds) {
+    if (backtestChart) { backtestChart.destroy(); backtestChart = null; }
+    var labels = thresholds.map(function (t) { return t.threshold + "점"; });
+    var signalData = thresholds.map(function (t) { return t.signals; });
+    var winData = thresholds.map(function (t) { return t.win_rate == null ? null : t.win_rate; });
+    backtestChart = new Chart($("chart-backtest"), {
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            type: "bar",
+            label: "신호수",
+            data: signalData,
+            backgroundColor: "rgba(91,141,239,0.6)",
+            yAxisID: "y",
+            order: 2,
+          },
+          {
+            type: "line",
+            label: "승률(%)",
+            data: winData,
+            borderColor: "#f5a623",
+            backgroundColor: "#f5a623",
+            borderWidth: 2,
+            pointRadius: 3,
+            tension: 0.1,
+            yAxisID: "y1",
+            order: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { labels: { boxWidth: 12 } } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
+          y: { position: "left", beginAtZero: true, title: { display: true, text: "신호수" } },
+          y1: {
+            position: "right",
+            beginAtZero: true,
+            grid: { drawOnChartArea: false },
+            title: { display: true, text: "승률(%)" },
+          },
+        },
+      },
+    });
+  }
+
+  function renderBacktestThresholdTable(thresholds) {
+    var body = $("backtest-threshold-body");
+    body.innerHTML = "";
+    thresholds.forEach(function (t) {
+      var tr = document.createElement("tr");
+      function cell(html, cls) {
+        var td = document.createElement("td");
+        if (cls) td.className = cls;
+        td.innerHTML = html;
+        return td;
+      }
+      tr.appendChild(cell(String(t.threshold) + "점"));
+      tr.appendChild(cell(String(t.signals)));
+      tr.appendChild(cell(t.win_rate == null ? "-" : fmtNum(t.win_rate) + "%"));
+      [t.avg_5d, t.avg_10d, t.avg_20d].forEach(function (v) {
+        if (v == null || isNaN(v)) tr.appendChild(cell("-"));
+        else tr.appendChild(cell(fmtPct(v), pctClass(v)));
+      });
+      tr.appendChild(cell(String(t.sample_size)));
+      body.appendChild(tr);
+    });
+  }
+
+  function renderBacktestRecentTable(signals) {
+    var body = $("backtest-recent-body");
+    body.innerHTML = "";
+    if (!signals.length) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">최근 신호가 없습니다.</td></tr>';
+      return;
+    }
+    signals.slice(0, 20).forEach(function (r) {
+      var tr = document.createElement("tr");
+      function cell(html, cls) {
+        var td = document.createElement("td");
+        if (cls) td.className = cls;
+        td.innerHTML = html;
+        return td;
+      }
+      tr.appendChild(cell(String(r.date).slice(0, 10)));
+      var tdTk = document.createElement("td");
+      tdTk.className = "ticker-cell";
+      tdTk.innerHTML = tickerLabel(r.ticker);
+      tr.appendChild(tdTk);
+      tr.appendChild(cell(String(r.score)));
+      [r.ret5, r.ret10, r.ret20].forEach(function (v) {
+        if (v == null || isNaN(v)) tr.appendChild(cell("-"));
         else tr.appendChild(cell(fmtPct(v), pctClass(v)));
       });
       body.appendChild(tr);

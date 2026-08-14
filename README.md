@@ -78,13 +78,21 @@ cp .env.example .env        # SUPABASE_URL/KEY, 텔레그램 토큰 입력
 ./run_local.sh --no-telegram                # 텔레그램 대신 콘솔 출력
 ./run_local.sh --no-db --no-telegram        # 순수 분석 (env 변수 불필요)
 ./run_local.sh --date 2026-08-13            # 기준 날짜 지정
+./run_local.sh --threshold 60               # 신호 임계값 조정 (기본 65)
 
 # 직접 실행도 가능
 python run_local.py --no-db --no-telegram
 python run_local.py --date 2026-08-13        # 잘못된 날짜 형식은 실행 전 거부
+python run_local.py --threshold 60           # 60점 이상을 신호로 저장/발송
 python report.py             # 주간 리포트를 콘솔로 확인
 python report.py --weeks 4   # 최근 4주만 집계 (기본: 전체)
 python -m pytest tests/     # 테스트 실행 (pip install -r requirements-dev.txt)
+
+# 임계값별 백테스트 (fetch 1회 + 지표 선계산, lookahead bias 없음)
+python backtest.py                              # 전체 watchlist, 기본 6개월, 55/60/65점 비교
+python backtest.py --thresholds 50,55,60,65     # 임계값 조합 지정
+python backtest.py --weeks 12                   # 기간 지정 (기본 26주)
+python backtest.py --tickers AAPL,MSFT          # 특정 종목만
 ```
 
 참고: `--no-db` 모드는 Supabase를 아예 사용하지 않아 자격증명이 필요 없습니다.
@@ -108,10 +116,13 @@ python -m pytest tests/     # 테스트 실행 (pip install -r requirements-dev.
    (URL: `https://<사용자명>.github.io/us_stock_scanner/`)
 
 ### 화면
-- 현황: 최신 스캔 날짜, 당일 후보(≥65점) 수, 후보 상위 3종목 카드
+- 현황: 최신 스캔 날짜, 당일 후보(≥65점) 수, 후보 상위 3종목 카드, 근접 후보(60~64점) 상위 3종목
 - 점수판: 날짜별 종목 테이블 (점수/RSI/고점대비/이동평균/거래량비, 컬럼 정렬)
 - 상세: 종목별 가격+MA20/MA50, 점수, RSI 차트 (1/3/6개월, RSI 35/40 참조선)
 - 신호·성과: 신호 히스토리 + 기간별(4/12주/전체) 승률·평균 수익률 (주간 리포트와 동일 로직)
+- 백테스트: 임계값별(65/60/55점) 신호수·승률·평균수익률 차트·표 + 최근 신호 목록
+  (`.github/workflows/backtest.yml`이 매주 월요일 23:00 UTC에 `backtest.py --json`으로
+  `dashboard/data/backtest.json`을 갱신·커밋 → 자동 재배포. GitHub Actions 탭에서 수동 실행도 가능)
 
 ## 8. 주의
 기술적 신호는 매수 추천이나 수익을 보장하지 않습니다.

@@ -36,6 +36,8 @@ def main() -> None:
                         help="텔레그램 발송 대신 콘솔 출력")
     parser.add_argument("--date", type=_valid_date, default=None,
                         help="기준 날짜 YYYY-MM-DD (기본: 오늘 UTC)")
+    parser.add_argument("--threshold", type=int, default=65,
+                        help="신호 임계값 (기본 65)")
     args = parser.parse_args()
 
     if not args.no_db:
@@ -44,7 +46,8 @@ def main() -> None:
 
     candidates, failures = scan(date=args.date,
                                 persist=not args.no_db,
-                                notify=not args.no_telegram)
+                                notify=not args.no_telegram,
+                                threshold=args.threshold)
     print(f"\n📋 후보 {len(candidates)}개 (스캔 완료)")
     if failures:
         sys.exit(f"❌ {len(failures)}개 종목 실패: {', '.join(failures)}")

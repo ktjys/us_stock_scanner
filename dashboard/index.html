@@ -26,6 +26,7 @@
     <button class="tab-btn" data-screen="scoreboard">점수판</button>
     <button class="tab-btn" data-screen="detail">상세</button>
     <button class="tab-btn" data-screen="signals">신호·성과</button>
+    <button class="tab-btn" data-screen="backtest">백테스트</button>
   </nav>
 
   <main>
@@ -49,7 +50,9 @@
           </div>
         </div>
         <h2 style="font-size:15px;margin:6px 0 12px;">후보 상위 3종목</h2>
+        <h2 style="font-size:15px;margin:6px 0 12px;" id="status-near-title">근접 후보 (60~64점)</h2>
         <div class="candidate-cards" id="status-top-candidates"></div>
+        <div class="candidate-cards" id="status-near-candidates"></div>
       </div>
     </section>
 
@@ -131,6 +134,53 @@
               </tr>
             </thead>
             <tbody id="signals-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 화면 5: 백테스트 -->
+    <section id="screen-backtest" class="screen hidden">
+      <div id="backtest-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="backtest-error" class="error hidden"></div>
+      <div id="backtest-empty" class="empty hidden">아직 백테스트 데이터가 없습니다</div>
+      <div id="backtest-content" class="hidden">
+        <div class="info-bar" id="backtest-info"></div>
+        <div class="chart-box">
+          <h3>임계값별 신호수 / 승률</h3>
+          <div class="chart-canvas-wrap"><canvas id="chart-backtest"></canvas></div>
+        </div>
+        <h2 style="font-size:15px;margin:18px 0 12px;">임계값별 요약</h2>
+        <div class="table-wrap">
+          <table id="backtest-threshold-table">
+            <thead>
+              <tr>
+                <th>임계값</th>
+                <th>신호수</th>
+                <th>승률</th>
+                <th>평균수익률 5일</th>
+                <th>평균수익률 10일</th>
+                <th>평균수익률 20일</th>
+                <th>표본수</th>
+              </tr>
+            </thead>
+            <tbody id="backtest-threshold-body"></tbody>
+          </table>
+        </div>
+        <h2 style="font-size:15px;margin:18px 0 12px;">최근 신호</h2>
+        <div class="table-wrap">
+          <table id="backtest-recent-table">
+            <thead>
+              <tr>
+                <th>날짜</th>
+                <th>종목</th>
+                <th>점수</th>
+                <th>5일</th>
+                <th>10일</th>
+                <th>20일</th>
+              </tr>
+            </thead>
+            <tbody id="backtest-recent-body"></tbody>
           </table>
         </div>
       </div>

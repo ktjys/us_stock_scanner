@@ -61,3 +61,29 @@ def test_scan_collects_failures(capsys, monkeypatch):
     assert [c["ticker"] for c in cands] == ["GOOD"]
     assert failures == ["BAD"]
     assert "BAD 오류: network" in capsys.readouterr().out
+
+
+def test_scan_threshold_excludes_below(monkeypatch):
+    """임계값 이하 점수는 후보에서 제외되어야 한다."""
+    fake = {"ticker": "LOW", "score": 30, "price": 100.0, "rsi": 50.0,
+            "drawdown": -5.0, "conditions": []}
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["LOW"])
+    monkeypatch.setattr("stock_scanner.time.sleep", lambda s: None)
+
+    cands, failures = scan(persist=False, notify=False, threshold=80)
+    assert [c["ticker"] for c in cands] == []
+    assert failures == []
+
+
+def test_scan_threshold_includes_above(monkeypatch):
+    """임계값 이상 점수는 후보에 포함되어야 한다."""
+    fake = {"ticker": "HIGH", "score": 90, "price": 100.0, "rsi": 30.0,
+            "drawdown": -12.0, "conditions": ["RSI<35 과매도"]}
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["HIGH"])
+    monkeypatch.setattr("stock_scanner.time.sleep", lambda s: None)
+
+    cands, failures = scan(persist=False, notify=False, threshold=80)
+    assert [c["ticker"] for c in cands] == ["HIGH"]
+    assert failures == []

@@ -184,8 +184,8 @@ def save_daily(x: dict[str, Any], date: str) -> None:
     }).execute()
 
 
-def save_signal(x: dict[str, Any], date: str) -> None:
-    if x["score"] < ALERT_SCORE:
+def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> None:
+    if x["score"] < threshold:
         return
     get_db().table("signals").upsert({
         "signal_date": date, "ticker": x["ticker"],
@@ -354,7 +354,8 @@ def build_alert_message(candidates: list[dict[str, Any]], date: str) -> str:
 
 def scan(date: str | None = None,
          persist: bool = True,
-         notify: bool = True) -> tuple[list[dict[str, Any]], list[str]]:
+         notify: bool = True,
+         threshold: int = ALERT_SCORE) -> tuple[list[dict[str, Any]], list[str]]:
     """스캔 파이프라인을 실행하고 (후보 목록, 실패 ticker 목록)을 반환한다.
 
     - persist=False: DB 저장/수익률 갱신 생략 (Supabase 미사용, 분석만)
@@ -372,8 +373,8 @@ def scan(date: str | None = None,
             if x:
                 if persist:
                     save_daily(x, date)
-                    save_signal(x, date)
-                if x["score"] >= ALERT_SCORE:
+                    save_signal(x, date, threshold)
+                if x["score"] >= threshold:
                     candidates.append(x)
             time.sleep(1)
         except Exception as e:
@@ -403,12 +404,16 @@ def scan(date: str | None = None,
         if failures:
             print(f"[{date}] 후보 0건 (실패 {len(failures)}개: {', '.join(failures)})")
         else:
-            print(f"[{date}] 후보 0건 (65점 이상 종목 없음)")
+            print(f"[{date}] 후보 0건 ({threshold}점 이상 종목 없음)")
     return candidates, failures
 
 
 def main() -> None:
-    _, failures = scan()
+    parser = argparse.ArgumentParser(description="미국주식 스캐너")
+    parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
+                        help="신호 임계값 (기본 65)")
+    args = parser.parse_args()
+    _, failures = scan(threshold=args.threshold)
     if failures:
         sys.exit(f"❌ {len(failures)}개 종목 처리 실패: {', '.join(failures)}")
 
