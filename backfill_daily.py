@@ -2,6 +2,8 @@
 
 watchlist 종목의 1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤,
 각 과거 거래일을 행 단위로 스코어링해 daily_data 테이블에 채운다.
+score >= threshold인 행은 signals 테이블로 승격하며, daily_data가 신호일
+이후까지 이미 있으므로 5/10/20거래일 수익률도 즉시 계산해 함께 저장한다.
 모든 스코어링은 해당 행까지의 데이터만 사용하므로 lookahead bias가 없다.
 stdout에는 결과 요약만, 진행 로그/경고는 stderr로 출력한다.
 """
@@ -14,9 +16,11 @@ from typing import Any
 import pandas as pd
 
 from backtest import _compute_indicators, _get_db_if_available, _load_tickers
-from stock_scanner import fetch_history, score_signal
+from stock_scanner import ALERT_SCORE, fetch_history, score_signal
 
 UPSERT_BATCH = 500
+# (신호일 이후 거래일 수, signals 컬럼명)
+SIGNAL_RETURN_KEYS = ((5, "return_5d"), (10, "return_10d"), (20, "return_20d"))
 
 
 def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str) -> list[dict]:
@@ -60,6 +64,36 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str) -> lis
     return records
 
 
+def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
+    """백필 records 중 score >= threshold인 행을 signals 스키마 dict로 승격한다.
+
+    수익률은 신호일 이후 거래일 종가 기준으로 계산한다 (update_returns와 동일
+    규칙: 이후 n번째 행이 없으면 None). 각 ticker의 records는 날짜 오름차순이다.
+    """
+    by_ticker: dict[str, list[dict]] = {}
+    for r in records:
+        by_ticker.setdefault(r["ticker"], []).append(r)
+
+    signals: list[dict] = []
+    for rows in by_ticker.values():
+        for r in rows:
+            if r["score"] < threshold:
+                continue
+            after = [x for x in rows if x["date"] > r["date"]]
+            rets: dict[str, float | None] = {}
+            for n, key in SIGNAL_RETURN_KEYS:
+                if len(after) >= n and r["price"]:
+                    rets[key] = (after[n - 1]["price"] / r["price"] - 1) * 100
+                else:
+                    rets[key] = None
+            signals.append({
+                "signal_date": r["date"], "ticker": r["ticker"],
+                "signal_price": r["price"], "score": r["score"],
+                "rsi": r["rsi"], "drawdown": r["drawdown"], **rets,
+            })
+    return signals
+
+
 def _run_backfill(weeks: int, tickers: list[str]) -> dict:
     """fetch 루프 + 행 단위 백필 실행.
 
@@ -101,11 +135,27 @@ def _upsert_batches(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -
             rows[i:i + batch_size], on_conflict="date,ticker").execute()
 
 
+def _upsert_signals(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -> None:
+    """signals unique(signal_date,ticker) 기준 upsert를 배치 단위로 실행한다.
+
+    id는 identity PK이므로 본문에 넣지 않는다.
+    """
+    for i in range(0, len(rows), batch_size):
+        db.table("signals").upsert(
+            rows[i:i + batch_size], on_conflict="signal_date,ticker").execute()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="과거 daily_data 백필")
     parser.add_argument("--weeks", type=int, default=26,
                         help="백필 기간 (df 마지막 날짜 기준 최근 N주)")
     parser.add_argument("--tickers", help="콤마 구분 ticker (지정 시 watchlist 대체)")
+    parser.add_argument("--with-signals", dest="with_signals", action="store_true",
+                        default=True, help="신호 승격 (기본 True)")
+    parser.add_argument("--no-signals", dest="with_signals", action="store_false",
+                        help="신호 승격 끄기")
+    parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
+                        help="신호 임계값 (기본 65)")
     args = parser.parse_args()
 
     db = _get_db_if_available()
@@ -122,7 +172,13 @@ def main() -> None:
 
     rows = result["records"]
     _upsert_batches(db, rows)
-    print(f"백필 완료: {len(rows)}행 "
+    signal_count = 0
+    if args.with_signals:
+        signals = _promote_signals(rows, args.threshold)
+        if signals:
+            _upsert_signals(db, signals)
+        signal_count = len(signals)
+    print(f"백필 완료: {len(rows)}행 daily + {signal_count}개 신호 "
           f"({result['start']} ~ {result['end']}, ticker {len(result['tickers'])}개)")
 
 
