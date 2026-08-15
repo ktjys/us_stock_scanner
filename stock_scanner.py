@@ -1,7 +1,7 @@
 """미국주식 매수신호 스캐너.
 
 GitHub Actions가 평일마다 실행해 watchlist 종목의 기술적 신호를 스코어링하고,
-65점 이상인 경우 signals 테이블에 저장한 뒤 Telegram으로 알림을 보낸다.
+ALERT_SCORE 이상인 경우 signals 테이블에 저장한 뒤 Telegram으로 알림을 보낸다.
 신호의 5/10/20일 수익률은 이후 배치로 갱신된다.
 """
 
@@ -22,7 +22,7 @@ from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
 from supabase import create_client
 
 WATCHLIST_FILE = "watchlist.csv"
-ALERT_SCORE = 65
+ALERT_SCORE = 65  # V5 백테스트 후 조정 권장
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
@@ -94,39 +94,111 @@ def fetch_history(ticker: str, retries: int = 3, backoff: float = 2.0) -> pd.Dat
 
 
 def score_signal(price: float, rv: float, prev: float,
-                 ma20: float, ma50: float, dd: float, vr: float) -> tuple[int, list[str]]:
-    """기술지표 → (점수, 조건목록).
+                 ma20: float, ma50: float, dd: float, vr: float,
+                 ma50_prev: float | None = None,
+                 prev_price: float | None = None) -> tuple[int, list[str]]:
+    """기술지표 → (0~100점, 조건목록).
 
-    RSI 구간(과매도)은 상호배타적이라 중복 가산되지 않아,
-    RSI 하나만으로 점수가 과도하게 치우치지 않는다.
+    V5 점수는 단순히 '많이 떨어졌는가'보다
+    '과매도 + 반등 조짐 + 중기 추세 유지 + 적당한 눌림'을 높게 평가한다.
+
+    배점:
+      RSI 상태       20
+      RSI 반등       20
+      고점대비       15
+      MA20 눌림      15
+      중기 추세      20
+      거래량/반등    10
+      총합          100
     """
     score, cond = 0, []
-    if rv < 35:
+
+    # 1) RSI 상태: 극단적 과매도보다 25~35 부근을 선호.
+    if 30 <= rv < 35:
         score += 20
-        cond.append("RSI<35 과매도")
-    elif rv < 40:
+        cond.append("RSI30~35")
+    elif 25 <= rv < 30:
+        score += 17
+        cond.append("RSI25~30")
+    elif 35 <= rv < 40:
+        score += 14
+        cond.append("RSI35~40")
+    elif 20 <= rv < 25:
         score += 10
-        cond.append("RSI<40 과매도")
-    if rv > prev:
+        cond.append("RSI20~25")
+    elif rv < 20:
+        score += 5
+        cond.append("RSI<20")
+    elif 40 <= rv < 45:
+        score += 5
+        cond.append("RSI40~45")
+
+    # 2) RSI 반등: 단순 과매도보다 반등 폭을 중요하게 본다.
+    delta_rsi = rv - prev
+    if delta_rsi >= 5:
+        score += 20
+        cond.append("RSI강한반등")
+    elif delta_rsi >= 2:
         score += 15
         cond.append("RSI반등")
-    if dd <= -10:
-        score += 20
-        cond.append("고점대비-10%")
-    if abs(price / ma20 - 1) <= 0.03:
+    elif delta_rsi > 0:
+        score += 10
+        cond.append("RSI소폭반등")
+
+    # 3) 60거래일 고점 대비 눌림: 적당한 조정을 선호하고 급락은 제한.
+    if -20 <= dd <= -10:
+        score += 15
+        cond.append("고점대비-10~-20%")
+    elif -10 < dd <= -5:
+        score += 8
+        cond.append("고점대비-5~-10%")
+    elif -25 <= dd < -20:
+        score += 7
+        cond.append("고점대비-20~-25%")
+    elif dd < -25:
+        score += 2
+        cond.append("고점대비-25%이상급락")
+
+    # 4) MA20: 20일선에서 눌림/접근한 구간을 선호.
+    ma20_gap = (price / ma20 - 1) * 100
+    if abs(ma20_gap) <= 2:
         score += 15
         cond.append("20일선근접")
+    elif abs(ma20_gap) <= 5:
+        score += 10
+        cond.append("20일선5%이내")
+    elif abs(ma20_gap) <= 8:
+        score += 5
+        cond.append("20일선8%이내")
+
+    # 5) 중기 추세: 가격이 MA50 위이고 MA50 자체도 상승하는 종목을 선호.
     if price > ma50:
-        score += 10
+        score += 8
         cond.append("50일선위")
-    if vr >= 1.2:
+    if ma50_prev is not None and ma50 > ma50_prev:
+        score += 7
+        cond.append("50일선상승")
+    if price > ma20 > ma50:
+        score += 5
+        cond.append("MA20>MA50")
+
+    # 6) 거래량: 무조건 거래량 폭증보다 가격 반등과 동반된 경우를 선호.
+    price_up = prev_price is None or price > prev_price
+    if vr >= 1.5 and price_up:
         score += 10
+        cond.append("반등+거래량1.5배")
+    elif vr >= 1.2 and price_up:
+        score += 7
+        cond.append("반등+거래량증가")
+    elif vr >= 1.2:
+        score += 3
         cond.append("거래량증가")
-    return score, cond
+
+    return min(score, 100), cond
 
 
 def compute_signal(ticker: str, df: pd.DataFrame) -> dict[str, Any] | None:
-    """가격 데이터프레임에서 신호를 계산한다 (순수 함수 - 테스트 용이)."""
+    """가격 데이터프레임에서 V5 신호를 계산한다 (순수 함수)."""
     if df.empty:
         return None
 
@@ -146,13 +218,19 @@ def compute_signal(ticker: str, df: pd.DataFrame) -> dict[str, Any] | None:
     prev = float(b["rsi"])
     ma20 = float(a["ma20"])
     ma50 = float(a["ma50"])
+    ma50_prev = float(b["ma50"])
     dd = (price / float(a["high60"]) - 1) * 100
     vr = float(a["Volume"]) / float(a["avgvol"])
+    prev_price = float(b["Close"])
 
-    score, cond = score_signal(price, rv, prev, ma20, ma50, dd, vr)
+    score, cond = score_signal(
+        price, rv, prev, ma20, ma50, dd, vr,
+        ma50_prev=ma50_prev, prev_price=prev_price
+    )
     return dict(ticker=ticker, price=price, rsi=rv, prev_rsi=prev,
                 ma20=ma20, ma50=ma50, drawdown=dd,
-                volume_ratio=vr, score=score, conditions=cond)
+                volume_ratio=vr, score=score, conditions=cond,
+                data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
 
 
 def analyze(ticker: str, date: str | None = None) -> dict[str, Any] | None:
@@ -185,7 +263,7 @@ def save_daily(x: dict[str, Any], date: str) -> None:
         "rsi": x["rsi"], "prev_rsi": x["prev_rsi"],
         "ma20": x["ma20"], "ma50": x["ma50"],
         "drawdown": x["drawdown"], "volume_ratio": x["volume_ratio"],
-        "score": x["score"],
+        "score": x["score"], "score_version": 5,
     }).execute()
 
 
@@ -194,7 +272,7 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         return
     get_db().table("signals").upsert({
         "signal_date": date, "ticker": x["ticker"],
-        "signal_price": x["price"], "score": x["score"],
+        "signal_price": x["price"], "score": x["score"], "score_version": 5,
         "rsi": x["rsi"], "drawdown": x["drawdown"],
     }, on_conflict="signal_date,ticker").execute()
 
@@ -398,8 +476,9 @@ def scan(date: str | None = None,
         try:
             x = analyze(ticker, date)
             if x and persist:
-                save_daily(x, date)
-                save_signal(x, date, threshold)
+                market_date = x.get("data_date", date)
+                save_daily(x, market_date)
+                save_signal(x, market_date, threshold)
             return ticker, x, None
         except Exception as e:
             return ticker, None, e
@@ -420,11 +499,13 @@ def scan(date: str | None = None,
 
     # 중복 알림 방지: 최근 5일 이내 신호가 있던 종목은 텔레그램에서 제외
     if notify and db is not None:
-        recent = recent_alert_tickers(db, date, [c["ticker"] for c in candidates])
+        alert_date = max((c.get("data_date", date) for c in candidates), default=date)
+        recent = recent_alert_tickers(db, alert_date, [c["ticker"] for c in candidates])
         candidates = filter_recent_alerts(candidates, recent)
 
     if candidates:
-        msg = build_alert_message(candidates, date)
+        alert_date = max(c.get("data_date", date) for c in candidates)
+        msg = build_alert_message(candidates, alert_date)
         if notify:
             try:
                 telegram(msg)

@@ -11,7 +11,7 @@
   "use strict";
 
 var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
-var NEAR_THRESHOLD = 60;  // 근접 후보 임계점 (60~64점)
+var NEAR_THRESHOLD = 55;  // V5 근접 후보 임계점 (55~64점)
 var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
   // ---- 설정 로드 (config.js 가 window.DASHBOARD_CONFIG 로 노출) ----
@@ -29,7 +29,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
   // ---- 공유 상태 ----
   var nameMap = {};      // ticker -> name (전체 watchlist)
   var activeTickers = []; // 활성 watchlist ticker 목록
-  var charts = { price: null, score: null, rsi: null };
+  var charts = { detail: null };
   var currentScreen = "status";
 
   // ---- 포맷터 ----
@@ -660,61 +660,132 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: { legend: { labels: { boxWidth: 12 } } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
-      },
+      scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true } } },
     };
+  }
+
+  // 통합 상세 차트: 가격/이평 + 점수 + RSI + 거래량을 하나의 시간축으로 표시한다.
+  // Chart.js의 기본 tooltip(index 모드)를 이용해 같은 날짜의 모든 값을 동시에 보여주고,
+  // custom plugin으로 선택 날짜의 세로선을 그린다.
+  var detailCrosshairPlugin = {
+    id: "detailCrosshair",
+    afterDraw: function (chart) {
+      var active = chart.getActiveElements();
+      if (!active || !active.length) return;
+      var x = active[0].element.x;
+      var area = chart.chartArea;
+      var ctx = chart.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x, area.top);
+      ctx.lineTo(x, area.bottom);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(80,90,110,.65)";
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+
+  function fmtMoney(v) {
+    if (v == null || !isFinite(Number(v))) return "-";
+    return "$" + Number(v).toFixed(2);
+  }
+  function fmtNum(v, digits) {
+    if (v == null || !isFinite(Number(v))) return "-";
+    return Number(v).toFixed(digits == null ? 1 : digits);
+  }
+
+  function updateDetailSelection(chart, rows) {
+    var active = chart.getActiveElements();
+    if (!active || !active.length) return;
+    var idx = active[0].index;
+    var r = rows[idx];
+    if (!r) return;
+    $("detail-selected-date").textContent = r.date;
+    $("detail-tooltip-summary").innerHTML =
+      '<div><b>가격</b><strong>' + fmtMoney(r.price) + '</strong></div>' +
+      '<div><b>MA20</b><strong>' + fmtMoney(r.ma20) + '</strong></div>' +
+      '<div><b>MA50</b><strong>' + fmtMoney(r.ma50) + '</strong></div>' +
+      '<div><b>점수</b><strong>' + fmtNum(r.score, 0) + '</strong></div>' +
+      '<div><b>RSI</b><strong>' + fmtNum(r.rsi, 1) + '</strong></div>' +
+      '<div><b>거래량</b><strong>' + fmtNum(r.volume_ratio, 2) + 'x</strong></div>';
   }
 
   function renderDetailCharts(rows) {
     destroyCharts();
+    var canvas = $("chart-detail");
     var labels = rows.map(function (r) { return r.date; });
-
-    // ① 가격 + MA20/MA50
-    charts.price = new Chart($("chart-price"), {
-      type: "line",
-      data: {
-        labels: labels,
-        datasets: [
-          { label: "가격", data: rows.map(function (r) { return r.price; }), borderColor: "#5b8def", borderWidth: 2, pointRadius: 0, tension: 0.1 },
-          { label: "MA20", data: rows.map(function (r) { return r.ma20; }), borderColor: "#f5a623", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
-          { label: "MA50", data: rows.map(function (r) { return r.ma50; }), borderColor: "#2ecc71", borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
-        ],
-      },
-      options: baseLineOpts(),
-    });
-
-    // ② 점수
-    charts.score = new Chart($("chart-score"), {
-      type: "line",
-      data: {
-        labels: labels,
-        datasets: [
-          { label: "점수", data: rows.map(function (r) { return r.score; }), borderColor: "#b07cff", borderWidth: 2, pointRadius: 0, tension: 0.1, fill: false },
-        ],
-      },
-      options: Object.assign(baseLineOpts(), {
-        scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true } }, y: { suggestedMin: 0, suggestedMax: 100 } },
-      }),
-    });
-
-    // ③ RSI + 참조선 35/40
+    var volume = rows.map(function (r) { return r.volume_ratio; });
     var ref35 = labels.map(function () { return 35; });
     var ref40 = labels.map(function () { return 40; });
-    charts.rsi = new Chart($("chart-rsi"), {
+
+    charts.detail = new Chart(canvas, {
       type: "line",
+      plugins: [detailCrosshairPlugin],
       data: {
         labels: labels,
         datasets: [
-          { label: "RSI", data: rows.map(function (r) { return r.rsi; }), borderColor: "#5b8def", borderWidth: 2, pointRadius: 0, tension: 0.1, fill: false, order: 0 },
-          { label: "과매도 35", data: ref35, borderColor: "rgba(255,92,92,0.7)", borderWidth: 1, borderDash: [5, 4], pointRadius: 0, fill: false, order: 1 },
-          { label: "과매도 40", data: ref40, borderColor: "rgba(245,166,35,0.7)", borderWidth: 1, borderDash: [5, 4], pointRadius: 0, fill: false, order: 1 },
-        ],
+          { label: "가격", data: rows.map(function (r) { return r.price; }), yAxisID: "yPrice", borderWidth: 2.4, pointRadius: 0, tension: .12, spanGaps: true },
+          { label: "MA20", data: rows.map(function (r) { return r.ma20; }), yAxisID: "yPrice", borderWidth: 1.5, pointRadius: 0, tension: .12, spanGaps: true },
+          { label: "MA50", data: rows.map(function (r) { return r.ma50; }), yAxisID: "yPrice", borderWidth: 1.5, pointRadius: 0, tension: .12, spanGaps: true },
+          { label: "점수", data: rows.map(function (r) { return r.score; }), yAxisID: "yScore", borderWidth: 1.7, pointRadius: 0, tension: .12, spanGaps: true, borderDash: [6,3] },
+          { label: "RSI", data: rows.map(function (r) { return r.rsi; }), yAxisID: "yRsi", borderWidth: 1.8, pointRadius: 0, tension: .12, spanGaps: true },
+          { label: "RSI 35", data: ref35, yAxisID: "yRsi", borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
+          { label: "RSI 40", data: ref40, yAxisID: "yRsi", borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
+          { label: "거래량 x20D", data: volume, yAxisID: "yVolume", type: "line", borderWidth: 1, pointRadius: 0, tension: .08, fill: true, spanGaps: true },
+        ]
       },
-      options: Object.assign(baseLineOpts(), {
-        scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true } }, y: { suggestedMin: 0, suggestedMax: 100 } },
-      }),
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        onHover: function (event, active) {
+          if (active && active.length) updateDetailSelection(charts.detail, rows);
+        },
+        onClick: function (event, active) {
+          if (active && active.length) {
+            charts.detail.setActiveElements(active);
+            charts.detail.tooltip.setActiveElements(active, {x: active[0].element.x, y: active[0].element.y});
+            updateDetailSelection(charts.detail, rows);
+            charts.detail.update();
+          }
+        },
+        plugins: {
+          legend: { display: true, position: "top", labels: { boxWidth: 10, padding: 8, font: { size: 10 } } },
+          tooltip: {
+            mode: "index", intersect: false,
+            callbacks: {
+              title: function (items) { return items.length ? items[0].label : ""; },
+              label: function (ctx) {
+                var v = ctx.parsed.y;
+                if (v == null) return null;
+                if (ctx.dataset.yAxisID === "yPrice") return ctx.dataset.label + ": " + fmtMoney(v);
+                if (ctx.dataset.yAxisID === "yVolume") return ctx.dataset.label + ": " + fmtNum(v, 2) + "x";
+                return ctx.dataset.label + ": " + fmtNum(v, ctx.dataset.label === "점수" ? 0 : 1);
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { maxTicksLimit: 9, autoSkip: true, maxRotation: 0 } },
+          yPrice: { position: "left", title: { display: true, text: "가격" }, grid: { drawOnChartArea: true } },
+          yScore: { position: "right", min: 0, max: 100, title: { display: true, text: "점수" }, grid: { drawOnChartArea: false } },
+          yRsi: { position: "right", min: 0, max: 100, offset: true, title: { display: true, text: "RSI" }, grid: { drawOnChartArea: false } },
+          yVolume: { display: false, min: 0, suggestedMax: 3 },
+        }
+      }
     });
+
+    // 모바일에서는 마지막 날짜를 기본 선택해 요약 정보를 바로 보여준다.
+    var last = labels.length - 1;
+    if (last >= 0) {
+      var active = [{ datasetIndex: 0, index: last }];
+      charts.detail.setActiveElements(active);
+      charts.detail.tooltip.setActiveElements(active, {x: charts.detail.scales.x.getPixelForValue(last), y: charts.detail.scales.yPrice.getPixelForValue(rows[last].price)});
+      updateDetailSelection(charts.detail, rows);
+      charts.detail.update();
+    }
   }
 
   // =====================================================================
@@ -928,7 +999,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       tr.appendChild(cell(String(t.threshold) + "점"));
       tr.appendChild(cell(String(t.signals)));
       tr.appendChild(cell(t.win_rate == null ? "-" : fmtNum(t.win_rate) + "%"));
-      [t.avg_5d, t.avg_10d, t.avg_20d].forEach(function (v) {
+      [t.avg_5d, t.avg_10d, t.avg_20d, t.avg_mae_5d, t.avg_mfe_5d].forEach(function (v) {
         if (v == null || isNaN(v)) tr.appendChild(cell("-"));
         else tr.appendChild(cell(fmtPct(v), pctClass(v)));
       });

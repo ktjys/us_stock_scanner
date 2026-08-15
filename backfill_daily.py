@@ -55,11 +55,17 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str) -> lis
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
         vr = float(df["Volume"].iloc[i]) / float(df["avgvol"].iloc[i])
 
-        score, _ = score_signal(price, rv, prev, ma20, ma50, dd, vr)
+        ma50_prev = float(df["ma50"].iloc[i - 1])
+        prev_price = float(close.iloc[i - 1])
+        score, _ = score_signal(
+            price, rv, prev, ma20, ma50, dd, vr,
+            ma50_prev=ma50_prev, prev_price=prev_price,
+        )
         records.append({
             "date": str(df.index[i])[:10], "ticker": ticker, "price": price,
             "rsi": rv, "prev_rsi": prev, "ma20": ma20, "ma50": ma50,
             "drawdown": dd, "volume_ratio": vr, "score": score,
+            "score_version": 5,
         })
     return records
 
@@ -89,7 +95,8 @@ def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
             signals.append({
                 "signal_date": r["date"], "ticker": r["ticker"],
                 "signal_price": r["price"], "score": r["score"],
-                "rsi": r["rsi"], "drawdown": r["drawdown"], **rets,
+                "rsi": r["rsi"], "drawdown": r["drawdown"],
+                "score_version": 5, **rets,
             })
     return signals
 
@@ -147,8 +154,8 @@ def _upsert_signals(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="과거 daily_data 백필")
-    parser.add_argument("--weeks", type=int, default=26,
-                        help="백필 기간 (df 마지막 날짜 기준 최근 N주)")
+    parser.add_argument("--weeks", type=int, default=52,
+                        help="백필 기간 (df 마지막 날짜 기준 최근 N주, 기본 52주)")
     parser.add_argument("--tickers", help="콤마 구분 ticker (지정 시 watchlist 대체)")
     parser.add_argument("--with-signals", dest="with_signals", action="store_true",
                         default=True, help="신호 승격 (기본 True)")

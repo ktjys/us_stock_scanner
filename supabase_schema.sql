@@ -9,6 +9,7 @@ create table if not exists daily_data (
   drawdown double precision,
   volume_ratio double precision,
   score integer,
+  score_version integer not null default 1,
   primary key (date, ticker)
 );
 
@@ -18,6 +19,7 @@ create table if not exists signals (
   ticker text not null,
   signal_price double precision,
   score integer,
+  score_version integer not null default 1,
   rsi double precision,
   drawdown double precision,
   return_5d double precision,

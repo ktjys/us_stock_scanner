@@ -50,41 +50,48 @@ def test_rsi_seed_matches_hand_computed_wilder():
 
 
 # ---------------------------------------------------------------------------
-# 스코어링
+# V5 스코어링
 # ---------------------------------------------------------------------------
 
 
 def test_rsi_tiers_are_exclusive():
-    # 35 <= rv < 40 → +10만 가산 (RSI<35의 +20과 중복 불가)
-    score, cond = score_signal(100.0, 37.0, 40.0, 110.0, 120.0, -5.0, 1.0)
-    assert score == 10
-    assert cond == ["RSI<40 과매도"]
+    score, cond = score_signal(100.0, 37.0, 37.0, 110.0, 120.0, -2.0, 1.0)
+    assert score == 14
+    assert cond == ["RSI35~40"]
 
 
-def test_rsi_deep_oversold_tier():
-    score, cond = score_signal(100.0, 30.0, 35.0, 110.0, 120.0, -5.0, 1.0)
-    assert score == 20
-    assert "RSI<35 과매도" in cond
-    assert "RSI<40 과매도" not in cond
+def test_rsi_rebound_is_stronger_with_larger_delta():
+    weak, _ = score_signal(100, 31, 30, 110, 120, -2, 1)
+    strong, _ = score_signal(100, 35, 29, 110, 120, -2, 1)
+    assert strong > weak
 
 
-def test_no_rsi_points_when_above_40():
-    score, cond = score_signal(100.0, 45.0, 50.0, 110.0, 120.0, -5.0, 1.0)
-    assert score == 0
-    assert cond == []
+def test_deep_crash_is_not_maximally_rewarded():
+    moderate, _ = score_signal(100, 32, 30, 110, 120, -15, 1)
+    crash, _ = score_signal(100, 32, 30, 110, 120, -35, 1)
+    assert moderate > crash
 
 
-def test_rebound_alone():
-    score, cond = score_signal(100.0, 50.0, 40.0, 110.0, 120.0, -5.0, 1.0)
-    assert score == 15
-    assert cond == ["RSI반등"]
+def test_uptrend_adds_more_points_than_broken_trend():
+    healthy, _ = score_signal(
+        100, 32, 30, 100, 95, -12, 1.5, ma50_prev=94, prev_price=98
+    )
+    broken, _ = score_signal(
+        80, 32, 30, 90, 100, -12, 1.5, ma50_prev=101, prev_price=82
+    )
+    assert healthy > broken
 
 
-def test_full_combo_max_score():
-    # 과매도 20 + 반등 15 + 고점대비 20 + 20일선 15 + 50일선 10 + 거래량 10 = 90
-    score, cond = score_signal(100.0, 30.0, 25.0, 98.0, 90.0, -15.0, 2.0)
-    assert score == 90
-    assert len(cond) == 6
+def test_full_combo_v5_max_score():
+    # RSI20 + RSI강한반등20 + drawdown15 + MA20 15
+    # + price>MA50 8 + MA50상승7 + MA20>MA50 5
+    # + 반등+거래량10 = 100
+    score, cond = score_signal(
+        100.0, 32.0, 26.0, 99.0, 90.0, -15.0, 1.7,
+        ma50_prev=89.0, prev_price=98.0
+    )
+    assert score == 100
+    assert len(cond) == 8
 
 
 # ---------------------------------------------------------------------------

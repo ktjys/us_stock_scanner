@@ -19,7 +19,7 @@ from stock_scanner import (ALERT_SCORE, get_db, load_watchlist,
                            fetch_history, rsi, score_signal)
 
 RET_HORIZONS = (5, 10, 20)
-DEFAULT_THRESHOLDS = f"{ALERT_SCORE},60,55"
+DEFAULT_THRESHOLDS = "80,75,70,65,60,55,50,45,40"
 
 
 def _get_db_if_available() -> Any:
@@ -56,14 +56,24 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _future_returns(close: pd.Series, idx: int) -> dict[int, float | None]:
-    """신호 행 이후 N거래일 수익률(%); 이후 데이터가 부족하면 None."""
-    out = {}
+def _future_metrics(df: pd.DataFrame, idx: int) -> dict[int, dict[str, float | None]]:
+    """신호 이후 N거래일 종가수익률 + MFE/MAE를 계산한다.
+
+    MFE = 해당 기간 고가 기준 최대 상승폭,
+    MAE = 해당 기간 저가 기준 최대 하락폭.
+    모두 신호 당일 종가를 기준으로 계산한다.
+    """
+    entry = float(df["Close"].iloc[idx])
+    out: dict[int, dict[str, float | None]] = {}
     for n in RET_HORIZONS:
-        if idx + n < len(close):
-            out[n] = (float(close.iloc[idx + n]) / float(close.iloc[idx]) - 1) * 100
-        else:
-            out[n] = None
+        if idx + n >= len(df):
+            out[n] = {"ret": None, "mfe": None, "mae": None}
+            continue
+        window = df.iloc[idx + 1: idx + n + 1]
+        ret = (float(df["Close"].iloc[idx + n]) / entry - 1) * 100
+        mfe = (float(window["High"].max()) / entry - 1) * 100
+        mae = (float(window["Low"].min()) / entry - 1) * 100
+        out[n] = {"ret": ret, "mfe": mfe, "mae": mae}
     return out
 
 
@@ -100,16 +110,26 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
         vr = float(df["Volume"].iloc[i]) / float(df["avgvol"].iloc[i])
 
-        score, _ = score_signal(price, rv, prev, ma20, ma50, dd, vr)
+        ma50_prev = float(df["ma50"].iloc[i - 1])
+        prev_price = float(close.iloc[i - 1])
+        score, _ = score_signal(
+            price, rv, prev, ma20, ma50, dd, vr,
+            ma50_prev=ma50_prev, prev_price=prev_price
+        )
         if score < thresholds[-1]:
             continue
-        rets = _future_returns(close, i)
+        metrics = _future_metrics(df, i)
         date = str(df.index[i])[:10]
         for t in thresholds:
             if score >= t:
                 records.append({
                     "date": date, "ticker": ticker, "score": score, "price": price,
-                    "ret5": rets[5], "ret10": rets[10], "ret20": rets[20],
+                    "ret5": metrics[5]["ret"], "ret10": metrics[10]["ret"],
+                    "ret20": metrics[20]["ret"],
+                    "mfe5": metrics[5]["mfe"], "mfe10": metrics[10]["mfe"],
+                    "mfe20": metrics[20]["mfe"],
+                    "mae5": metrics[5]["mae"], "mae10": metrics[10]["mae"],
+                    "mae20": metrics[20]["mae"],
                     "threshold": t,
                 })
     return records
@@ -163,27 +183,29 @@ def _fmt_win(v: float | None) -> str:
 
 
 def _summarize(records: list[dict], thresholds: list[int]) -> pd.DataFrame:
-    """threshold별 신호 건수/승률/평균 수익률 요약 테이블."""
+    """threshold별 신호 건수/승률/수익률/MAE/MFE 요약."""
     rows = []
     for t in thresholds:
         recs = [r for r in records if r["threshold"] == t]
-        rets = {n: [r[f"ret{n}"] for r in recs if r[f"ret{n}"] is not None]
-                for n in RET_HORIZONS}
+
+        def vals(key: str) -> list[float]:
+            return [r[key] for r in recs if r[key] is not None]
 
         def mean(xs: list[float]) -> float | None:
             return sum(xs) / len(xs) if xs else None
 
-        win5 = None
-        if rets[5]:
-            win5 = sum(x > 0 for x in rets[5]) / len(rets[5]) * 100
+        r5, r10, r20 = vals("ret5"), vals("ret10"), vals("ret20")
+        win5 = sum(x > 0 for x in r5) / len(r5) * 100 if r5 else None
         rows.append({
             "threshold": t,
             "신호수": len(recs),
             "승률(5일)": _fmt_win(win5),
-            "평균수익률 5일": _fmt_avg(mean(rets[5])),
-            "평균수익률 10일": _fmt_avg(mean(rets[10])),
-            "평균수익률 20일": _fmt_avg(mean(rets[20])),
-            "표본수": len(rets[5]),
+            "평균수익률 5일": _fmt_avg(mean(r5)),
+            "평균수익률 10일": _fmt_avg(mean(r10)),
+            "평균수익률 20일": _fmt_avg(mean(r20)),
+            "평균MAE 5일": _fmt_avg(mean(vals("mae5"))),
+            "평균MFE 5일": _fmt_avg(mean(vals("mfe5"))),
+            "표본수": len(r5),
         })
     return pd.DataFrame(rows)
 
@@ -211,27 +233,30 @@ def build_backtest_summary(weeks: int = 26, tickers: str | None = None) -> str:
 
 def _build_json_report(records: list[dict], thresholds: list[int], tickers: list[str],
                        start: str, end: str, weeks: int) -> dict:
-    """대시보드용 JSON 리포트 dict를 만든다 (스키마는 dashboard와 공유)."""
+    """대시보드용 JSON 리포트 dict."""
     thr_rows = []
     for t in sorted(thresholds, reverse=True):
         recs = [r for r in records if r["threshold"] == t]
-        rets = {n: [r[f"ret{n}"] for r in recs if r[f"ret{n}"] is not None]
-                for n in RET_HORIZONS}
+
+        def vals(key: str) -> list[float]:
+            return [r[key] for r in recs if r[key] is not None]
 
         def mean(xs: list[float]) -> float | None:
             return sum(xs) / len(xs) if xs else None
 
-        win5 = None
-        if rets[5]:
-            win5 = sum(x > 0 for x in rets[5]) / len(rets[5]) * 100
+        r5, r10, r20 = vals("ret5"), vals("ret10"), vals("ret20")
+        mae5, mfe5 = vals("mae5"), vals("mfe5")
+        win5 = sum(x > 0 for x in r5) / len(r5) * 100 if r5 else None
         thr_rows.append({
             "threshold": t,
             "signals": len(recs),
             "win_rate": win5,
-            "avg_5d": mean(rets[5]),
-            "avg_10d": mean(rets[10]),
-            "avg_20d": mean(rets[20]),
-            "sample_size": len(rets[5]),
+            "avg_5d": mean(r5),
+            "avg_10d": mean(r10),
+            "avg_20d": mean(r20),
+            "avg_mae_5d": mean(mae5),
+            "avg_mfe_5d": mean(mfe5),
+            "sample_size": len(r5),
         })
 
     uniq = {}
@@ -239,12 +264,14 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
         uniq.setdefault((r["date"], r["ticker"]), r)
     recent = [
         {"date": r["date"], "ticker": r["ticker"], "score": r["score"],
-         "ret5": r["ret5"], "ret10": r["ret10"], "ret20": r["ret20"]}
+         "ret5": r["ret5"], "ret10": r["ret10"], "ret20": r["ret20"],
+         "mae5": r["mae5"], "mfe5": r["mfe5"]}
         for r in sorted(uniq.values(), key=lambda r: (r["date"], r["score"]),
-                        reverse=True)[:20]
+                        reverse=True)[:30]
     ]
 
     return {
+        "version": "v5",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period_start": start,
         "period_end": end,

@@ -115,17 +115,19 @@
       <div id="detail-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
       <div id="detail-error" class="error hidden"></div>
       <div id="detail-content" class="hidden charts">
-        <div class="chart-box">
-          <h3>가격 + MA20 / MA50</h3>
-          <div class="chart-canvas-wrap"><canvas id="chart-price"></canvas></div>
-        </div>
-        <div class="chart-box">
-          <h3>점수</h3>
-          <div class="chart-canvas-wrap"><canvas id="chart-score"></canvas></div>
-        </div>
-        <div class="chart-box">
-          <h3>RSI (참조선 35 / 40)</h3>
-          <div class="chart-canvas-wrap"><canvas id="chart-rsi"></canvas></div>
+        <div class="chart-box detail-chart-box">
+          <div class="detail-chart-head">
+            <div>
+              <h3>통합 차트</h3>
+              <div class="chart-hint">날짜를 터치하면 선택선이 고정되고 가격·이평·점수·RSI·거래량을 한 번에 확인할 수 있습니다.</div>
+            </div>
+            <div id="detail-selected-date" class="selected-date">최근</div>
+          </div>
+          <div id="detail-tooltip-summary" class="chart-summary"></div>
+          <div class="chart-canvas-wrap detail-chart-wrap"><canvas id="chart-detail"></canvas></div>
+          <div class="chart-legend-hint">
+            <span>가격/MA20/MA50</span><span>점수</span><span>RSI</span><span>거래량(20일 대비)</span>
+          </div>
         </div>
       </div>
     </section>
@@ -205,6 +207,8 @@
                 <th>평균수익률 5일</th>
                 <th>평균수익률 10일</th>
                 <th>평균수익률 20일</th>
+                <th>평균 MAE 5일</th>
+                <th>평균 MFE 5일</th>
                 <th>표본수</th>
               </tr>
             </thead>

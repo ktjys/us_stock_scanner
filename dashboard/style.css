@@ -380,3 +380,27 @@ tbody tr.candidate:hover { background: rgba(91, 141, 239, 0.14); }
   .tab-btn { padding: 8px 12px; font-size: 13px; }
   .stat-value { font-size: 19px; }
 }
+
+
+/* ---------- 통합 상세 차트 V5.1 ---------- */
+.detail-chart-box { padding-bottom: 12px; }
+.detail-chart-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.detail-chart-head h3 { margin-bottom:2px; }
+.chart-hint { font-size:11px; color:var(--text-dim); }
+.selected-date { font-size:12px; font-weight:700; white-space:nowrap; padding:5px 8px; border:1px solid var(--border); border-radius:8px; background:var(--bg); }
+.chart-summary { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:6px; margin:10px 0 8px; }
+.chart-summary > div { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:7px 8px; min-width:0; }
+.chart-summary b { display:block; font-size:10px; color:var(--text-dim); font-weight:500; }
+.chart-summary strong { display:block; margin-top:2px; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.detail-chart-wrap { height:460px; touch-action:pan-y; }
+.chart-legend-hint { display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:7px; color:var(--text-dim); font-size:10px; }
+@media (max-width: 700px) {
+  .chart-summary { grid-template-columns:repeat(3,1fr); }
+  .detail-chart-wrap { height:430px; }
+  .chart-hint { max-width:260px; line-height:1.35; }
+}
+@media (max-width: 420px) {
+  .chart-summary { grid-template-columns:repeat(2,1fr); }
+  .detail-chart-wrap { height:400px; }
+  .detail-chart-head { align-items:center; }
+}
