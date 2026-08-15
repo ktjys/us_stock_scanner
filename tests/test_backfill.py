@@ -9,7 +9,7 @@ from backfill_daily import _backfill_ticker, _promote_signals
 from stock_scanner import compute_signal
 
 SCHEMA_KEYS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
-               "drawdown", "volume_ratio", "score")
+               "drawdown", "volume_ratio", "score", "score_version")
 
 
 def _make_df(n=100, seed=42):
