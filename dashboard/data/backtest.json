@@ -1,0 +1,434 @@
+{
+  "version": "v5",
+  "generated_at": "2026-08-15T10:41:50.562177+00:00",
+  "period_start": "2026-02-13",
+  "period_end": "2026-08-14",
+  "weeks": 26,
+  "ticker_count": 21,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "NVDA",
+    "META",
+    "AVGO",
+    "ORCL",
+    "VOO",
+    "SCHD",
+    "SMH",
+    "SOXX",
+    "IBM",
+    "JEPI",
+    "JEPQ",
+    "V",
+    "TSLA",
+    "SPCX",
+    "QQQM",
+    "SCHG",
+    "OKLO"
+  ],
+  "thresholds": [
+    {
+      "threshold": 80,
+      "signals": 0,
+      "win_rate": null,
+      "avg_5d": null,
+      "avg_10d": null,
+      "avg_20d": null,
+      "avg_mae_5d": null,
+      "avg_mfe_5d": null,
+      "sample_size": 0
+    },
+    {
+      "threshold": 75,
+      "signals": 0,
+      "win_rate": null,
+      "avg_5d": null,
+      "avg_10d": null,
+      "avg_20d": null,
+      "avg_mae_5d": null,
+      "avg_mfe_5d": null,
+      "sample_size": 0
+    },
+    {
+      "threshold": 70,
+      "signals": 3,
+      "win_rate": 33.33333333333333,
+      "avg_5d": -1.2328234861460547,
+      "avg_10d": -8.135486556838659,
+      "avg_20d": -6.914150364266369,
+      "avg_mae_5d": -6.029755938666514,
+      "avg_mfe_5d": 3.7849667624901975,
+      "sample_size": 3
+    },
+    {
+      "threshold": 65,
+      "signals": 16,
+      "win_rate": 56.25,
+      "avg_5d": 1.0516844917194228,
+      "avg_10d": -2.236414821520991,
+      "avg_20d": -1.9214667220854116,
+      "avg_mae_5d": -4.661212231865958,
+      "avg_mfe_5d": 4.678911671127146,
+      "sample_size": 16
+    },
+    {
+      "threshold": 60,
+      "signals": 48,
+      "win_rate": 44.680851063829785,
+      "avg_5d": -0.02745601249050501,
+      "avg_10d": -1.8339381258845375,
+      "avg_20d": -3.162073189988845,
+      "avg_mae_5d": -4.721002196129131,
+      "avg_mfe_5d": 4.5161784894990875,
+      "sample_size": 47
+    },
+    {
+      "threshold": 55,
+      "signals": 139,
+      "win_rate": 47.82608695652174,
+      "avg_5d": 0.003810035683070171,
+      "avg_10d": -0.33709786093563665,
+      "avg_20d": -0.4262473058620365,
+      "avg_mae_5d": -4.287151903906113,
+      "avg_mfe_5d": 3.913937683797612,
+      "sample_size": 138
+    },
+    {
+      "threshold": 50,
+      "signals": 352,
+      "win_rate": 49.570200573065904,
+      "avg_5d": -0.0668789246337826,
+      "avg_10d": -0.08169400056143163,
+      "avg_20d": -0.3326908235717278,
+      "avg_mae_5d": -3.617548070453004,
+      "avg_mfe_5d": 3.3388729346762256,
+      "sample_size": 349
+    },
+    {
+      "threshold": 45,
+      "signals": 647,
+      "win_rate": 50.31645569620253,
+      "avg_5d": 0.07189599485418893,
+      "avg_10d": 0.3952609753157586,
+      "avg_20d": 0.441102156688098,
+      "avg_mae_5d": -3.5730063177233746,
+      "avg_mfe_5d": 3.4449310030233646,
+      "sample_size": 632
+    },
+    {
+      "threshold": 40,
+      "signals": 1038,
+      "win_rate": 52.57425742574257,
+      "avg_5d": 0.41267375941173146,
+      "avg_10d": 0.6800698441683677,
+      "avg_20d": 0.9818221379097845,
+      "avg_mae_5d": -3.4743441433755877,
+      "avg_mfe_5d": 3.7717563637523783,
+      "sample_size": 1010
+    }
+  ],
+  "recent_signals": [
+    {
+      "date": "2026-08-14",
+      "ticker": "JEPI",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-14",
+      "ticker": "AAPL",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-14",
+      "ticker": "SCHD",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "V",
+      "score": 62,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "META",
+      "score": 50,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "AVGO",
+      "score": 48,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "AAPL",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "JEPI",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "SCHD",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "SCHG",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "VOO",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "GOOGL",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-13",
+      "ticker": "JEPQ",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-12",
+      "ticker": "JEPI",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-12",
+      "ticker": "JEPQ",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-12",
+      "ticker": "SMH",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-12",
+      "ticker": "SOXX",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-12",
+      "ticker": "VOO",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-11",
+      "ticker": "V",
+      "score": 50,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-11",
+      "ticker": "META",
+      "score": 48,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-11",
+      "ticker": "JEPI",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-11",
+      "ticker": "SCHD",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-11",
+      "ticker": "SMH",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-11",
+      "ticker": "SOXX",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-10",
+      "ticker": "JEPI",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-10",
+      "ticker": "SCHD",
+      "score": 45,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-10",
+      "ticker": "GOOGL",
+      "score": 43,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-10",
+      "ticker": "SCHG",
+      "score": 40,
+      "ret5": null,
+      "ret10": null,
+      "ret20": null,
+      "mae5": null,
+      "mfe5": null
+    },
+    {
+      "date": "2026-08-07",
+      "ticker": "AVGO",
+      "score": 45,
+      "ret5": -8.128394131630234,
+      "ret10": null,
+      "ret20": null,
+      "mae5": -9.178045836294057,
+      "mfe5": 1.1618667260238302
+    },
+    {
+      "date": "2026-08-07",
+      "ticker": "SCHD",
+      "score": 45,
+      "ret5": 1.828905321468688,
+      "ret10": null,
+      "ret20": null,
+      "mae5": -0.23599359130888065,
+      "mfe5": 1.8879037192959025
+    }
+  ]
+}
