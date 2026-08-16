@@ -26,7 +26,7 @@ SIGNAL_RETURN_KEYS = ((5, "return_5d"), (10, "return_10d"), (20, "return_20d"))
 
 def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
                      market_df: pd.DataFrame | None = None) -> list[dict]:
-    """한 ticker의 각 과거 거래일을 V6 방식으로 스코어링한다."""
+    """한 ticker의 각 과거 거래일을 V7 방식으로 스코어링한다."""
     df = _compute_indicators(df)
     if df.empty:
         return []
@@ -40,15 +40,17 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
     records: list[dict] = []
     close = df["Close"].astype(float)
     for i in range(len(df)):
-        if not mask[i] or i == 0:
+        if not mask[i] or i < 2:
             continue
         if (pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma20"].iloc[i])
                 or pd.isna(df["ma50"].iloc[i]) or pd.isna(df["high60"].iloc[i])
-                or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])):
+                or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])
+                or pd.isna(df["rsi"].iloc[i - 2])):
             continue
         price = float(close.iloc[i])
         rv = float(df["rsi"].iloc[i])
         prev = float(df["rsi"].iloc[i - 1])
+        prev2 = float(df["rsi"].iloc[i - 2])
         ma20 = float(df["ma20"].iloc[i])
         ma50 = float(df["ma50"].iloc[i])
         ma50_prev = float(df["ma50"].iloc[i - 1])
@@ -61,7 +63,7 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
         score, _, _ = score_signal(
             price, rv, prev, ma20, ma50, dd, vr,
             ma50_prev=ma50_prev, prev_price=prev_price,
-            ma20_prev=ma20_prev, relative_strength_5d=rs5,
+            ma20_prev=ma20_prev, relative_strength_5d=rs5, prev2_rsi=prev2,
         )
         records.append({
             "date": str(df.index[i])[:10], "ticker": ticker, "price": price,
@@ -74,7 +76,7 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
 
 
 def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
-    """V6 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다."""
+    """V7 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다."""
     by_ticker: dict[str, list[dict]] = {}
     for r in records:
         if r["score"] >= threshold:

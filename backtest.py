@@ -1,7 +1,7 @@
 """과거 기간 threshold별 백테스트 도구.
 
 stock_scanner.py의 fetch_history/rsi/score_signal을 재사용해, watchlist 종목의
-1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤 행 단위로 스코어링한다.
+1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤 V7 행 단위로 스코어링한다.
 모든 스코어링은 해당 행까지의 데이터만 사용하므로 lookahead bias가 없다.
 stdout에는 결과 테이블만, 진행 로그/경고는 stderr로 출력한다.
 """
@@ -101,16 +101,18 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
     records: list[dict] = []
     close = df["Close"].astype(float)
     for i in range(len(df)):
-        if not mask[i] or i == 0:
+        if not mask[i] or i < 2:
             continue
         if (pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma20"].iloc[i])
                 or pd.isna(df["ma50"].iloc[i]) or pd.isna(df["high60"].iloc[i])
-                or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])):
+                or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])
+                or pd.isna(df["rsi"].iloc[i - 2])):
             continue
 
         price = float(close.iloc[i])
         rv = float(df["rsi"].iloc[i])
         prev = float(df["rsi"].iloc[i - 1])
+        prev2 = float(df["rsi"].iloc[i - 2])
         ma20 = float(df["ma20"].iloc[i])
         ma50 = float(df["ma50"].iloc[i])
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
@@ -123,7 +125,7 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
         score, _, details = score_signal(
             price, rv, prev, ma20, ma50, dd, vr,
             ma50_prev=ma50_prev, prev_price=prev_price,
-            ma20_prev=ma20_prev, relative_strength_5d=rs5
+            ma20_prev=ma20_prev, relative_strength_5d=rs5, prev2_rsi=prev2
         )
         if score < min_score:
             continue
@@ -147,7 +149,7 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
             "volume_ratio": vr,
             "relative_strength_5d": rs5,
 
-            # V6 세부 점수
+            # V7 세부 점수
             "rsi_state_score": details["rsi_state"],
             "rsi_rebound_score": details["rsi_rebound"],
             "price_rebound_score": details["price_rebound"],
@@ -211,7 +213,7 @@ def _apply_cooldown(records: list[dict], cooldown_days: int = COOLDOWN_DAYS) -> 
 
 def _run_backtest(thresholds: list[int], weeks: int,
                   tickers: list[str]) -> dict:
-    """fetch + V6 백테스트. QQQ 상대강도와 5일 cooldown을 함께 적용한다."""
+    """fetch + V7 백테스트. QQQ 상대강도와 5일 cooldown을 함께 적용한다."""
     dfs: dict[str, pd.DataFrame] = {}
     try:
         market_df = fetch_history("QQQ")
@@ -270,7 +272,7 @@ def _score_band(score: int) -> str:
 
 
 def _summarize_bands(records: list[dict]) -> pd.DataFrame:
-    """V6 점수 구간별(중복 신호 제거 후) 성과 요약."""
+    """V7 점수 구간별(중복 신호 제거 후) 성과 요약."""
     rows = []
     for lo, hi in SCORE_BANDS:
         label = f"{lo}-{hi}" if hi < 100 else "80+"
@@ -301,14 +303,14 @@ def _summarize_bands(records: list[dict]) -> pd.DataFrame:
 
 
 def build_backtest_summary(weeks: int = 26, tickers: str | None = None) -> str:
-    """주간 리포트용 V6 점수구간 요약 텍스트."""
+    """주간 리포트용 V7 점수구간 요약 텍스트."""
     try:
         thresholds = sorted({int(t) for t in DEFAULT_THRESHOLDS.split(",")}, reverse=True)
         db = _get_db_if_available()
         result = _run_backtest(thresholds, weeks, _load_tickers(tickers, db))
         if not result["tickers"]:
             return "백테스트 데이터 없음"
-        lines = [f"📊 V6 백테스트 (최근 {weeks}주, {len(result['tickers'])}종목, cooldown {COOLDOWN_DAYS}일)"]
+        lines = [f"📊 V7 백테스트 (최근 {weeks}주, {len(result['tickers'])}종목, cooldown {COOLDOWN_DAYS}일)"]
         for _, row in _summarize_bands(result["records"]).iterrows():
             win = row["win_rate"]
             lines.append(
@@ -325,7 +327,7 @@ def build_backtest_summary(weeks: int = 26, tickers: str | None = None) -> str:
 def _build_json_report(records: list[dict], thresholds: list[int], tickers: list[str],
                        start: str, end: str, weeks: int,
                        raw_records: list[dict] | None = None) -> dict:
-    """대시보드용 V6 JSON 리포트."""
+    """대시보드용 V7 JSON 리포트."""
     bands = _summarize_bands(records).to_dict(orient="records")
     uniq = {}
     for r in sorted(records, key=lambda r: (r["date"], r["ticker"], -r["score"])):
@@ -356,7 +358,7 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="V6 점수구간 백테스트")
+    parser = argparse.ArgumentParser(description="V7 점수구간 백테스트")
     parser.add_argument("--thresholds", default=DEFAULT_THRESHOLDS,
                         help="최저 스코어 필터로 사용할 임계값 목록 (기본 40~80)")
     parser.add_argument("--weeks", type=int, default=52,
@@ -379,7 +381,7 @@ def main() -> None:
         print("백테스트할 데이터 없음", file=sys.stderr)
         sys.exit(1)
 
-    print(f"=== V6 백테스트 결과 ({result['start']} ~ {result['end']}, "
+    print(f"=== V7 백테스트 결과 ({result['start']} ~ {result['end']}, "
           f"ticker {len(result['tickers'])}개, cooldown {COOLDOWN_DAYS}일) ===")
     print(_summarize_bands(result["records"]).to_string(index=False))
 

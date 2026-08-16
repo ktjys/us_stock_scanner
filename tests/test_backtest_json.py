@@ -1,4 +1,4 @@
-"""V6 백테스트 JSON 리포트 테스트."""
+"""V7 백테스트 JSON 리포트 테스트."""
 
 from backtest import _build_json_report
 
@@ -11,7 +11,7 @@ def _rec(date, ticker, score, ret5, ret10, ret20, mfe5=3.0, mae5=-1.0):
     }
 
 
-def test_json_report_has_v6_bands_and_recent_signals():
+def test_json_report_has_v7_bands_and_recent_signals():
     records = [
         _rec("2026-08-01", "AAPL", 70, 2.0, 3.0, 5.0),
         _rec("2026-07-25", "MSFT", 62, -1.0, None, None, .5, -2.0),
@@ -20,7 +20,7 @@ def test_json_report_has_v6_bands_and_recent_signals():
                                 ["AAPL", "MSFT"], "2026-02-01", "2026-08-01", 26,
                                 raw_records=records)
 
-    assert report["version"] == "v6"
+    assert report["version"] == "v7"
     assert report["period_start"] == "2026-02-01"
     assert report["ticker_count"] == 2
     assert [b["band"] for b in report["bands"]] == [

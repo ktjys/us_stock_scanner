@@ -11,7 +11,7 @@
   "use strict";
 
 var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
-var NEAR_THRESHOLD = 60;  // V6 근접 후보 임계점 (60~64점)
+var NEAR_THRESHOLD = 60;  // V7 근접 후보 임계점 (60~64점)
 var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
   // ---- 설정 로드 (config.js 가 window.DASHBOARD_CONFIG 로 노출) ----
@@ -786,7 +786,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     }
     if (panel === "score") {
       return {
-        title: "V6 점수",
+        title: "V7 점수",
         datasets: [
           { label:"점수", data:rows.map(function(r){return r.score;}), borderColor:DETAIL_COLORS.score, yAxisID:"y", borderWidth:2, pointRadius:0, tension:.12, spanGaps:true }
         ],
@@ -980,8 +980,8 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       })
       .then(function (data) {
         loadingEl.classList.add("hidden");
-        if (!data || data.version !== "v6" || !data.bands || !data.bands.length) {
-          emptyEl.textContent = "V6 백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
+        if (!data || data.version !== "v7" || !data.bands || !data.bands.length) {
+          emptyEl.textContent = "V7 백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
           emptyEl.classList.remove("hidden");
           return;
         }

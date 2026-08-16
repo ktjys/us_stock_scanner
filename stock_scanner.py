@@ -22,8 +22,8 @@ from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
 from supabase import create_client
 
 WATCHLIST_FILE = "watchlist.csv"
-ALERT_SCORE = 65  # V6 provisional; 백테스트 결과 확인 후 조정
-SCORE_VERSION = 6
+ALERT_SCORE = 65  # V7 provisional; 백테스트 결과 확인 후 조정
+SCORE_VERSION = 7
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
@@ -99,160 +99,110 @@ def score_signal(price: float, rv: float, prev: float,
                  ma50_prev: float | None = None,
                  prev_price: float | None = None,
                  ma20_prev: float | None = None,
-                 relative_strength_5d: float | None = None) -> tuple[int, list[str], dict]:
-    """V6 반등확인형 스코어 (0~100).
+                 relative_strength_5d: float | None = None,
+                 prev2_rsi: float | None = None) -> tuple[int, list[str], dict]:
+    """V7 반등확인형 스코어 (0~100).
 
-    목표는 '많이 떨어진 종목'보다 '눌림 후 실제 반등이 시작된 종목'을
-    높은 점수로 분리하는 것이다.
+    V6 백테스트에서 변별력이 낮았던 '소폭 RSI/가격 상승'의 과대평가를 줄이고,
+    적정 눌림·MA20 회복·상대강도·거래량을 더 중요하게 반영한다.
 
     배점:
-      RSI 상태             15
-      RSI 반등             20
-      가격 반등            20
-      적정 눌림폭          10
+      RSI 상태             20
+      RSI 반등             15
+      가격 반등            15
+      적정 눌림폭          15
       MA20 회복/접근       15
-      중기 추세             10
-      QQQ 대비 상대강도      5
+      중기 추세              5
+      QQQ 대비 상대강도     10
       반등+거래량            5
       총합                 100
+
+    RSI 반등은 가능하면 직전 2개 RSI까지 사용해 'RSI가 실제로 방향을 돌리는지' 확인한다.
+    prev2_rsi가 없으면 기존 호출과의 호환성을 위해 당일 RSI 변화만 사용한다.
 
     returns: (점수, 조건 목록, 영역별 세부 점수 dict)
     """
     score, cond = 0, []
-
     details = {
-        "rsi_state": 0,
-        "rsi_rebound": 0,
-        "price_rebound": 0,
-        "drawdown": 0,
-        "ma20": 0,
-        "trend": 0,
-        "relative_strength": 0,
-        "volume": 0,
+        "rsi_state": 0, "rsi_rebound": 0, "price_rebound": 0,
+        "drawdown": 0, "ma20": 0, "trend": 0,
+        "relative_strength": 0, "volume": 0,
     }
 
-    # 1) RSI 상태: 극단적 과매도 자체를 최고점으로 보지 않는다.
+    # 1) RSI 상태: 30~40을 가장 선호하되 극단적 과매도는 보수적으로 평가.
     if 30 <= rv < 40:
-        score += 15
-        details["rsi_state"] = 15
-        cond.append("RSI30~40")
+        score += 20; details["rsi_state"] = 20; cond.append("RSI30~40")
     elif 25 <= rv < 30:
-        score += 12
-        details["rsi_state"] = 12
-        cond.append("RSI25~30")
+        score += 16; details["rsi_state"] = 16; cond.append("RSI25~30")
     elif 40 <= rv < 45:
-        score += 8
-        details["rsi_state"] = 8
-        cond.append("RSI40~45")
+        score += 10; details["rsi_state"] = 10; cond.append("RSI40~45")
     elif 20 <= rv < 25:
-        score += 6
-        details["rsi_state"] = 6
-        cond.append("RSI20~25")
+        score += 8; details["rsi_state"] = 8; cond.append("RSI20~25")
     elif rv < 20:
-        score += 2
-        details["rsi_state"] = 2
-        cond.append("RSI<20")
+        score += 2; details["rsi_state"] = 2; cond.append("RSI<20")
 
-    # 2) RSI 반등: 방향 전환을 강하게 평가한다.
+    # 2) RSI 반등: 가능하면 2개 연속 상승까지 확인한다.
     delta_rsi = rv - prev
-    if delta_rsi >= 5:
-        score += 20
-        details["rsi_rebound"] = 20
-        cond.append("RSI강한반등")
-    elif delta_rsi >= 2:
-        score += 15
-        details["rsi_rebound"] = 15
-        cond.append("RSI반등")
-    elif delta_rsi > 0:
-        score += 8
-        details["rsi_rebound"] = 8
-        cond.append("RSI소폭반등")
+    rsi_turning_up = prev2_rsi is None or prev > prev2_rsi
+    if rv < 45 and rsi_turning_up:
+        if delta_rsi >= 3:
+            score += 15; details["rsi_rebound"] = 15; cond.append("RSI강한반등")
+        elif delta_rsi >= 2:
+            score += 10; details["rsi_rebound"] = 10; cond.append("RSI반등")
+        elif delta_rsi >= 1:
+            score += 5; details["rsi_rebound"] = 5; cond.append("RSI소폭반등")
 
-    # 3) 가격 반등: 전일 대비 실제 양봉/반등이 있어야 높은 점수를 준다.
+    # 3) 가격 반등: 아주 작은 상승은 점수에서 제외한다.
     day_return = ((price / prev_price) - 1) * 100 if prev_price else 0.0
     if day_return >= 2.0:
-        score += 20
-        details["price_rebound"] = 20
-        cond.append("가격강한반등")
+        score += 15; details["price_rebound"] = 15; cond.append("가격강한반등")
+    elif day_return >= 1.0:
+        score += 10; details["price_rebound"] = 10; cond.append("가격반등")
     elif day_return >= 0.5:
-        score += 14
-        details["price_rebound"] = 14
-        cond.append("가격반등")
-    elif day_return > 0:
-        score += 8
-        details["price_rebound"] = 8
-        cond.append("가격소폭반등")
+        score += 5; details["price_rebound"] = 5; cond.append("가격소폭반등")
 
-    # 4) 60일 고점 대비 눌림: 너무 깊은 급락은 매수점수를 주지 않는다.
+    # 4) 60일 고점 대비 눌림: 적정 눌림을 가장 선호, -25% 이하 급락은 제외.
     if -15 <= dd <= -5:
-        score += 10
-        details["drawdown"] = 10
-        cond.append("적정눌림-5~-15%")
+        score += 15; details["drawdown"] = 15; cond.append("적정눌림-5~-15%")
     elif -25 <= dd < -15:
-        score += 7
-        details["drawdown"] = 7
-        cond.append("눌림-15~-25%")
+        score += 10; details["drawdown"] = 10; cond.append("눌림-15~-25%")
     elif -5 < dd <= -2:
-        score += 4
-        details["drawdown"] = 4
-        cond.append("얕은눌림")
+        score += 5; details["drawdown"] = 5; cond.append("얕은눌림")
     elif dd < -25:
         cond.append("과도한급락")
 
-    # 5) MA20: 단순 근접보다 '회복'을 우선한다.
+    # 5) MA20: 단순 근접보다 하단에서 회복하는 경우를 우선.
     ma20_gap = (price / ma20 - 1) * 100
     crossed_ma20 = (
         ma20_prev is not None and prev_price is not None
         and prev_price <= ma20_prev and price > ma20
     )
     if crossed_ma20:
-        score += 15
-        details["ma20"] = 15
-        cond.append("MA20회복")
+        score += 15; details["ma20"] = 15; cond.append("MA20회복")
     elif price >= ma20 and ma20_gap <= 3:
-        score += 10
-        details["ma20"] = 10
-        cond.append("MA20위근접")
+        score += 10; details["ma20"] = 10; cond.append("MA20위근접")
     elif -3 <= ma20_gap < 0:
-        score += 8
-        details["ma20"] = 8
-        cond.append("MA20아래근접")
-    elif abs(ma20_gap) <= 5:
-        score += 4
-        details["ma20"] = 4
-        cond.append("MA205%이내")
+        score += 5; details["ma20"] = 5; cond.append("MA20아래근접")
 
-    # 6) 중기 추세.
+    # 6) 중기 추세는 보조조건으로만 사용.
     ma50_rising = ma50_prev is not None and ma50 > ma50_prev
     if price > ma50 and ma50_rising:
-        score += 10
-        details["trend"] = 10
-        cond.append("상승추세")
+        score += 5; details["trend"] = 5; cond.append("상승추세")
     elif price > ma50:
-        score += 6
-        details["trend"] = 6
-        cond.append("50일선위")
+        score += 3; details["trend"] = 3; cond.append("50일선위")
 
-    # 7) QQQ 대비 5거래일 상대강도.
+    # 7) QQQ 대비 5거래일 상대강도: 변별력을 높인다.
     if relative_strength_5d is not None:
         if relative_strength_5d >= 2:
-            score += 5
-            details["relative_strength"] = 5
-            cond.append("QQQ대비강함")
+            score += 10; details["relative_strength"] = 10; cond.append("QQQ대비강함")
         elif relative_strength_5d > 0:
-            score += 3
-            details["relative_strength"] = 3
-            cond.append("QQQ대비우위")
+            score += 5; details["relative_strength"] = 5; cond.append("QQQ대비우위")
 
-    # 8) 반등과 거래량이 같이 나타나는 경우만 강하게 가점.
+    # 8) 반등과 거래량이 같이 나타날 때만 가점.
     if vr >= 1.5 and day_return > 0:
-        score += 5
-        details["volume"] = 5
-        cond.append("반등+거래량1.5배")
+        score += 5; details["volume"] = 5; cond.append("반등+거래량1.5배")
     elif vr >= 1.2 and day_return > 0:
-        score += 3
-        details["volume"] = 3
-        cond.append("반등+거래량증가")
+        score += 3; details["volume"] = 3; cond.append("반등+거래량증가")
 
     return min(score, 100), cond, details
 
@@ -261,7 +211,7 @@ _market_df_cache: pd.DataFrame | None = None
 
 
 def _market_history() -> pd.DataFrame:
-    """V6 상대강도 계산용 QQQ 일봉. 프로세스 내 1회 캐시."""
+    """V7 상대강도 계산용 QQQ 일봉. 프로세스 내 1회 캐시."""
     global _market_df_cache
     if _market_df_cache is None or _market_df_cache.empty:
         _market_df_cache = fetch_history("QQQ")
@@ -296,7 +246,7 @@ def _relative_strength_5d(df: pd.DataFrame, market_df: pd.DataFrame) -> float | 
 
 def compute_signal(ticker: str, df: pd.DataFrame,
                    market_df: pd.DataFrame | None = None) -> dict[str, Any] | None:
-    """가격 데이터프레임에서 V6 신호를 계산한다 (순수 함수)."""
+    """가격 데이터프레임에서 V7 신호를 계산한다 (순수 함수)."""
     if df.empty:
         return None
 
@@ -307,10 +257,10 @@ def compute_signal(ticker: str, df: pd.DataFrame,
     df["high60"] = df["High"].rolling(60).max()
     df["avgvol"] = df["Volume"].rolling(20).mean()
     df = df.dropna()
-    if len(df) < 2:
+    if len(df) < 3:
         return None
 
-    a, b = df.iloc[-1], df.iloc[-2]
+    a, b, c = df.iloc[-1], df.iloc[-2], df.iloc[-3]
     price = float(a["Close"])
     rv = float(a["rsi"])
     prev = float(b["rsi"])
@@ -326,9 +276,10 @@ def compute_signal(ticker: str, df: pd.DataFrame,
     score, cond, _ = score_signal(
         price, rv, prev, ma20, ma50, dd, vr,
         ma50_prev=ma50_prev, prev_price=prev_price,
-        ma20_prev=ma20_prev, relative_strength_5d=rs5
+        ma20_prev=ma20_prev, relative_strength_5d=rs5,
+        prev2_rsi=float(c["rsi"]),
     )
-    return dict(ticker=ticker, price=price, rsi=rv, prev_rsi=prev,
+    return dict(ticker=ticker, price=price, rsi=rv, prev_rsi=prev, prev2_rsi=float(c["rsi"]),
                 ma20=ma20, ma50=ma50, drawdown=dd,
                 volume_ratio=vr, relative_strength_5d=rs5,
                 score=score, conditions=cond,
@@ -337,7 +288,7 @@ def compute_signal(ticker: str, df: pd.DataFrame,
 
 
 def analyze(ticker: str, date: str | None = None) -> dict[str, Any] | None:
-    """ticker의 데이터를 받아 V6 compute_signal()로 신호를 계산한다."""
+    """ticker의 데이터를 받아 V7 compute_signal()로 신호를 계산한다."""
     df = fetch_history(ticker)
     if df.empty:
         return None

@@ -141,9 +141,9 @@ python backtest.py --tickers AAPL,MSFT          # 특정 종목만
 기술적 신호는 매수 추천이나 수익을 보장하지 않습니다.
 
 
-## V6 점수식 변경
+## V7 점수식 변경
 
-V6는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 종목**을 찾는 방향으로 변경했습니다.
+V7는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 종목**을 찾는 방향으로 변경했습니다.
 
 - RSI 상태: 15점
 - RSI 반등: 20점
@@ -157,11 +157,11 @@ V6는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 �
 
 백테스트는 누적 임계값(≥65 등)만 보지 않고 40~44, 45~49 ... 80+ 점수구간으로 성과를 확인하며, 동일 종목의 5일 이내 반복 신호는 최고점 1건으로 줄입니다.
 
-### V6 상세 차트
+### V7 상세 차트
 
 상세 화면은 동기화된 멀티패널 구조입니다.
 
-- 기본: 가격/MA + 거래량 + RSI + V6 점수
+- 기본: 가격/MA + 거래량 + RSI + V7 점수
 - 가격+점수
 - 가격+RSI
 - 가격+거래량
@@ -170,9 +170,9 @@ V6는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 �
 
 모든 패널은 동일 날짜의 선택선과 선택값을 공유합니다.
 
-### V6 Supabase
+### V7 Supabase
 
-기존 DB에 `relative_strength_5d` 컬럼이 필요하므로 `supabase_v6_migration.sql`을 SQL Editor에서 한 번 실행하세요. 기존 데이터의 `score_version`은 유지하고 새 스캔/백필은 `score_version=6`으로 저장합니다.
+기존 DB에 `relative_strength_5d` 컬럼이 필요하므로 `supabase_v6_migration.sql`을 SQL Editor에서 한 번 실행하세요. 기존 데이터의 `score_version`은 유지하고 새 스캔/백필은 `score_version=7`으로 저장합니다.
 
 백필 예:
 `python backfill_daily.py --weeks 52 --threshold 40`
@@ -180,3 +180,12 @@ V6는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 �
 백테스트 예:
 `python backtest.py --weeks 52 --thresholds 80,75,70,65,60,55,50,45,40 --json dashboard/data/backtest.json`
 
+## V8 Phase 1 — 종목 자동 분류 (기존 Scanner 유지)
+
+V8의 첫 단계는 기존 V7 Scanner를 변경하지 않고 `asset_classification.py`를 추가하는 것입니다.
+Yahoo Finance 메타데이터를 표준화한 뒤 ETF/우량주/성장주/고변동 성장주 등의 장기 투자 전략군을
+자동 분류합니다. Supabase에는 `supabase_v8_phase1_migration.sql`로 분류 결과를 별도 저장합니다.
+
+- 기존 `daily_data`, `signals`, V7 scoring은 그대로 유지
+- 자동 분류 결과에는 confidence와 reason을 함께 저장
+- 이후 Phase 2에서 전략군별 Opportunity Score를 연결할 예정
