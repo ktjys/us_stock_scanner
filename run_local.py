@@ -13,7 +13,7 @@ import os
 import sys
 from datetime import datetime
 
-from stock_scanner import scan
+from stock_scanner import ALERT_SCORE, scan
 
 
 def _require_env(name: str) -> None:
@@ -36,8 +36,8 @@ def main() -> None:
                         help="텔레그램 발송 대신 콘솔 출력")
     parser.add_argument("--date", type=_valid_date, default=None,
                         help="기준 날짜 YYYY-MM-DD (기본: 오늘 UTC)")
-    parser.add_argument("--threshold", type=int, default=65,
-                        help="신호 임계값 (기본 65)")
+    parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
+                        help="신호 임계값 (기본 55)")
     args = parser.parse_args()
 
     if not args.no_db:

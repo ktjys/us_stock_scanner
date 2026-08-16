@@ -1,7 +1,7 @@
 """과거 daily_data 백필 도구.
 
 watchlist 종목의 1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤,
-각 과거 거래일을 행 단위로 스코어링해 daily_data 테이블에 채운다.
+각 과거 거래일을 행 단위로 V8 스코어링해 daily_data 테이블에 채운다.
 score >= threshold인 행은 signals 테이블로 승격하며, daily_data가 신호일
 이후까지 이미 있으므로 5/10/20거래일 수익률도 즉시 계산해 함께 저장한다.
 모든 스코어링은 해당 행까지의 데이터만 사용하므로 lookahead bias가 없다.
@@ -16,17 +16,32 @@ from typing import Any
 import pandas as pd
 
 from backtest import _compute_indicators, _get_db_if_available, _load_tickers
+from opportunity_engine import (component_sub_scores, compute_technical_components,
+                                opportunity_score, risk_score, signal_confidence)
 from stock_scanner import (ALERT_SCORE, ALERT_COOLDOWN_DAYS, SCORE_VERSION,
-                           fetch_history, score_signal, _relative_strength_series)
+                           fetch_history, resolve_strategy, _relative_strength_series)
 
 UPSERT_BATCH = 500
 # (신호일 이후 거래일 수, signals 컬럼명)
 SIGNAL_RETURN_KEYS = ((5, "return_5d"), (10, "return_10d"), (20, "return_20d"))
+# daily_data 테이블 컬럼 (save_daily와 동일 - signals 전용 컬럼은 제외)
+DAILY_DATA_COLUMNS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
+                      "drawdown", "volume_ratio", "relative_strength_5d",
+                      "score", "score_version", "strategy_type", "opportunity_score",
+                      "risk_level", "technical_score", "momentum_score",
+                      "fundamental_score", "valuation_score", "components")
 
 
 def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
-                     market_df: pd.DataFrame | None = None) -> list[dict]:
-    """한 ticker의 각 과거 거래일을 V7 방식으로 스코어링한다."""
+                     market_df: pd.DataFrame | None = None,
+                     strategy: str = "general",
+                     classification_confidence: float = 0.5) -> list[dict]:
+    """한 ticker의 각 과거 거래일을 V8 전략 인식 방식으로 스코어링한다.
+
+    펀더멘털 info가 없으므로 기술 컴포넌트만으로 기회 점수를 내고 (전략
+    가중치 자동 재정규화), 리스크는 beta 중간값·수익성 0점 기본값으로 계산한다.
+    행에 필요한 지표가 하나라도 NaN이면 건너뛴다.
+    """
     df = _compute_indicators(df)
     if df.empty:
         return []
@@ -42,41 +57,44 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
     for i in range(len(df)):
         if not mask[i] or i < 2:
             continue
-        if (pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma20"].iloc[i])
-                or pd.isna(df["ma50"].iloc[i]) or pd.isna(df["high60"].iloc[i])
-                or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])
-                or pd.isna(df["rsi"].iloc[i - 2])):
+        comps = compute_technical_components(df, i, market_df)
+        if comps is None:
             continue
         price = float(close.iloc[i])
         rv = float(df["rsi"].iloc[i])
         prev = float(df["rsi"].iloc[i - 1])
-        prev2 = float(df["rsi"].iloc[i - 2])
         ma20 = float(df["ma20"].iloc[i])
         ma50 = float(df["ma50"].iloc[i])
-        ma50_prev = float(df["ma50"].iloc[i - 1])
-        ma20_prev = float(df["ma20"].iloc[i - 1])
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
         vr = float(df["Volume"].iloc[i]) / float(df["avgvol"].iloc[i])
-        prev_price = float(close.iloc[i - 1])
         rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
 
-        score, _, _ = score_signal(
-            price, rv, prev, ma20, ma50, dd, vr,
-            ma50_prev=ma50_prev, prev_price=prev_price,
-            ma20_prev=ma20_prev, relative_strength_5d=rs5, prev2_rsi=prev2,
-        )
+        score = opportunity_score(comps, strategy)
+        subs = component_sub_scores(comps)
+        risk, level = risk_score(df, i)
         records.append({
             "date": str(df.index[i])[:10], "ticker": ticker, "price": price,
             "rsi": rv, "prev_rsi": prev, "ma20": ma20, "ma50": ma50,
             "drawdown": dd, "volume_ratio": vr,
             "relative_strength_5d": rs5,
             "score": score, "score_version": SCORE_VERSION,
+            "strategy_type": strategy,
+            "classification_confidence": classification_confidence,
+            "opportunity_score": score,
+            "risk_level": level,
+            "risk_score": risk,
+            "signal_confidence": signal_confidence(score),
+            "technical_score": subs["technical_score"],
+            "momentum_score": subs["momentum_score"],
+            "fundamental_score": subs["fundamental_score"],
+            "valuation_score": subs["valuation_score"],
+            "components": comps,
         })
     return records
 
 
 def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
-    """V7 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다."""
+    """V8 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다."""
     by_ticker: dict[str, list[dict]] = {}
     for r in records:
         if r["score"] >= threshold:
@@ -109,13 +127,26 @@ def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
             signals.append({
                 "signal_date": r["date"], "ticker": r["ticker"],
                 "signal_price": r["price"], "score": r["score"],
+                "score_version": r["score_version"],
                 "rsi": r["rsi"], "drawdown": r["drawdown"],
-                "score_version": SCORE_VERSION, **rets,
+                "strategy_type": r["strategy_type"],
+                "opportunity_score": r["opportunity_score"],
+                "risk_level": r["risk_level"],
+                "risk_score": r["risk_score"],
+                "signal_confidence": r["signal_confidence"],
+                "classification_confidence": r["classification_confidence"],
+                "technical_score": r["technical_score"],
+                "momentum_score": r["momentum_score"],
+                "fundamental_score": r["fundamental_score"],
+                "valuation_score": r["valuation_score"],
+                "components": r["components"],
+                **rets,
             })
     return sorted(signals, key=lambda x: (x["signal_date"], x["ticker"]), reverse=True)
 
 
-def _run_backfill(weeks: int, tickers: list[str]) -> dict:
+def _run_backfill(weeks: int, tickers: list[str],
+                  strategies: dict[str, tuple[str, float]] | None = None) -> dict:
     """fetch 루프 + 행 단위 백필 실행.
 
     fetch 실패 종목은 경고 후 스킵하고, 데이터가 하나도 없으면
@@ -148,17 +179,23 @@ def _run_backfill(weeks: int, tickers: list[str]) -> dict:
 
     records: list[dict] = []
     for ticker, df in dfs.items():
-        records.extend(_backfill_ticker(ticker, df, start_str, end_str, market_df))
+        strategy, cconf = (strategies or {}).get(ticker, ("general", 0.5))
+        records.extend(_backfill_ticker(ticker, df, start_str, end_str, market_df,
+                                        strategy=strategy,
+                                        classification_confidence=cconf))
 
     return {"records": records, "tickers": list(dfs),
             "start": start_str, "end": end_str, "weeks": weeks}
 
 
 def _upsert_batches(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -> None:
-    """daily_data PK(date,ticker) 기준 upsert를 배치 단위로 실행한다."""
+    """daily_data PK(date,ticker) 기준 upsert를 배치 단위로 실행한다.
+
+    records에는 signals 전용 필드도 섞여 있으므로 daily_data 컬럼만 추려 보낸다.
+    """
     for i in range(0, len(rows), batch_size):
-        db.table("daily_data").upsert(
-            rows[i:i + batch_size], on_conflict="date,ticker").execute()
+        batch = [{k: r[k] for k in DAILY_DATA_COLUMNS} for r in rows[i:i + batch_size]]
+        db.table("daily_data").upsert(batch, on_conflict="date,ticker").execute()
 
 
 def _upsert_signals(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -> None:
@@ -181,13 +218,14 @@ def main() -> None:
     parser.add_argument("--no-signals", dest="with_signals", action="store_false",
                         help="신호 승격 끄기")
     parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
-                        help="신호 임계값 (기본 65)")
+                        help="신호 임계값 (기본 55)")
     args = parser.parse_args()
 
     db = _get_db_if_available()
     tickers = _load_tickers(args.tickers, db)
+    strategies = {t: resolve_strategy(t, db) for t in tickers}
     print(f"백필 대상 {len(tickers)}개: {', '.join(tickers)}", file=sys.stderr)
-    result = _run_backfill(args.weeks, tickers)
+    result = _run_backfill(args.weeks, tickers, strategies)
 
     if not result["tickers"]:
         print("백필할 데이터 없음", file=sys.stderr)

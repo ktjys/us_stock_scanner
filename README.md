@@ -17,7 +17,7 @@ Repository → Settings → Secrets and variables → Actions에 등록:
 ## 3. 실행
 평일 매일 스캔 (22:30 UTC, 20분 타임아웃):
 - daily_data 저장
-- 65점 이상 signals 저장
+- 55점 이상 signals 저장
 - 미완료 신호(return_20d 미갱신)의 5/10/20일 수익률 업데이트
 - 매수 후보 Telegram 발송 (같은 종목은 5일 이내 재알림 없음)
 - yfinance 조회는 3회 재시도(지수 백오프), 7일 이상 지난 데이터(거래정지 등)는 스킵
@@ -81,7 +81,7 @@ cp .env.example .env        # SUPABASE_URL/KEY, 텔레그램 토큰 입력
 ./run_local.sh --no-telegram                # 텔레그램 대신 콘솔 출력
 ./run_local.sh --no-db --no-telegram        # 순수 분석 (env 변수 불필요)
 ./run_local.sh --date 2026-08-13            # 기준 날짜 지정
-./run_local.sh --threshold 60               # 신호 임계값 조정 (기본 65)
+./run_local.sh --threshold 60               # 신호 임계값 조정 (기본 55)
 
 # 직접 실행도 가능
 python run_local.py --no-db --no-telegram
@@ -92,9 +92,9 @@ python report.py --weeks 4   # 최근 4주만 집계 (기본: 전체)
 python -m pytest tests/     # 테스트 실행 (pip install -r requirements-dev.txt)
 
 # 과거 daily_data/신호 백필 (env 체크 + .env 자동 로드)
-./backfill.sh                              # 기본 52주 백필 + 신호 승격 (65점 이상)
+./backfill.sh                              # 기본 52주 백필 + 신호 승격 (55점 이상)
 ./backfill.sh --weeks 104                  # 2년치 백필
-./backfill.sh --threshold 60               # 신호 임계값 조정 (기본 65)
+./backfill.sh --threshold 60               # 신호 임계값 조정 (기본 55)
 ./backfill.sh --no-signals                 # 신호 승격 끄기 (daily_data만)
 ./backfill.sh --tickers AAPL,MSFT          # 특정 종목만
 # 주의: backfill_daily.py를 직접 실행하면 .env가 로드되지 않아 DB 저장이 생략되므로
@@ -128,13 +128,27 @@ python backtest.py --tickers AAPL,MSFT          # 특정 종목만
 4. 이후 `dashboard/` 파일이 커밋되면 워크플로우가 자동 배포됩니다
    (URL: `https://<사용자명>.github.io/us_stock_scanner/`)
 
-### 화면
-- 현황: 최신 스캔 날짜, 당일 후보(≥65점) 수, 후보 상위 3종목 카드, 근접 후보(60~64점) 상위 3종목
-- 점수판: 날짜별 종목 테이블 (점수/RSI/고점대비/이동평균/거래량비, 컬럼 정렬)
-- 상세: 종목별 가격+MA20/MA50, 점수, RSI 차트 (1/3/6개월, RSI 35/40 참조선)
-- 신호·성과: 신호 히스토리 + 기간별(4/12주/전체) 승률·평균 수익률 (주간 리포트와 동일 로직)
-- 백테스트: 임계값별(65/60/55점) 신호수·승률·평균수익률 차트·표 + 최근 신호 목록
-  (`.github/workflows/backtest.yml`이 매주 월요일 23:00 UTC에 `backtest.py --json`으로
+### 화면 (6개 탭, V8 기준)
+
+대시보드는 V8 Opportunity Score(score_version=8) 데이터를 표시합니다.
+V8 판단 규칙: 기회점수 55점 이상이고 리스크가 VERY_HIGH가 아니면 **BUY**, 그 외 **WATCH**.
+
+- **현황**: 최신 스캔 날짜, 당일 후보(기회점수 ≥55) 수, 활성 watchlist 수 + 후보 상위 3종목 카드
+  (전략/리스크/판단 배지, 점수·RSI·고점대비) + 근접 후보(50~54점) 상위 3종목.
+  마지막 스캔이 2~3일 이상 지났으면 "스캔 중단" 경고 배너 표시.
+- **점수판**: 날짜(최근 10영업일)별 종목 테이블 — 종목/전략/리스크/점수/RSI/전일RSI/고점대비/MA20/MA50/거래량비,
+  RSI·50일선·거래량비 필터, 컬럼 클릭 정렬. 55점 이상 행은 강조 표시.
+- **상세**: 종목별 동기화 멀티패널 차트 (1/3/6개월). 패널 조합: 기본(가격/MA + 거래량 + RSI + 점수),
+  가격+점수 / 가격+RSI / 가격+거래량 / 전체 / 사용자 정의(체크박스). 모든 패널은 날짜 선택선을 공유하며,
+  선택 시 가격·MA·점수·RSI·거래량비·상대강도·전략·리스크·4축 점수(기술/모멘텀/펀더멘털/밸류) 요약 표시.
+- **신호·성과**: 신호 히스토리(신호일/종목/전략/리스크/기회점수/판단/신호가/점수/신뢰도 + 5·10·20일 수익률) +
+  기간별(전체/4주/12주) 5·10·20일 평균수익률·승률(양수 비율) 카드. 주간 리포트와 동일 계산 로직.
+- **히트맵**: 행=종목, 열=날짜(최근 10거래일) 점수 그리드. 색상: 회색(≤0) · 짙은 파랑(<35) · 파랑(<60) ·
+  주황(<65, 근접) · 빨강(≥65, 신호). 셀 클릭 시 해당 종목 상세 탭으로 이동.
+- **백테스트**: 점수구간(40-44~80+)별 신호수·5일 승률·20일 평균수익률 차트 + 구간별 요약 표
+  (신호수/승률/평균 5·10·20일/MAE/MFE/표본수) + 최근 신호 목록.
+  backtest.json이 `modes.v7/v8` both 형식이면 **V8/V7 버전 토글**이 표시됩니다 (기본 V8).
+  (`.github/workflows/backtest.yml`이 매주 월요일 23:00 UTC에 `backtest.py --mode both --json`으로
   `dashboard/data/backtest.json`을 갱신·커밋 → 자동 재배포. GitHub Actions 탭에서 수동 실행도 가능)
 
 ## 8. 주의
@@ -145,13 +159,13 @@ python backtest.py --tickers AAPL,MSFT          # 특정 종목만
 
 V7는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 종목**을 찾는 방향으로 변경했습니다.
 
-- RSI 상태: 15점
-- RSI 반등: 20점
-- 가격 반등: 20점
-- 적정 눌림폭: 10점
+- RSI 상태: 20점
+- RSI 반등: 15점
+- 가격 반등: 15점
+- 적정 눌림폭: 15점
 - MA20 회복/접근: 15점
-- 중기 추세: 10점
-- QQQ 대비 5일 상대강도: 5점
+- 중기 추세: 5점
+- QQQ 대비 5일 상대강도: 10점
 - 반등+거래량 확인: 5점
 - 총 100점
 
@@ -189,3 +203,88 @@ Yahoo Finance 메타데이터를 표준화한 뒤 ETF/우량주/성장주/고변
 - 기존 `daily_data`, `signals`, V7 scoring은 그대로 유지
 - 자동 분류 결과에는 confidence와 reason을 함께 저장
 - 이후 Phase 2에서 전략군별 Opportunity Score를 연결할 예정
+
+## V8 Phase 2 — Opportunity Score (전략 인식 스코어링)
+
+V8 Phase 2는 V7의 단일 공통 점수식(`score_signal`)을 전략(strategy_type)별 가중치 스코어링으로
+대체합니다. 핵심 엔진은 `opportunity_engine.py`이며, V8 Scanner(`compute_signal_v8`)가
+`analyze()` → `scan()` 파이프라인에서 이를 사용합니다.
+
+### 점수의 의미 통일 (0~100)
+
+- `opportunity_score = round(100 * Σ(w·c) / Σ(w·max))`
+- 전략별 가중치 `w`가 각 컴포넌트의 중요도를 결정하고, **컴포넌트가 없으면 자동 재정규화**됩니다.
+  백테스트처럼 펀더멘털 정보가 없으면 기술 컴포넌트만으로 점수가 다시 정규화됩니다.
+- 컴포넌트 14종: rsi_state(20) rsi_rebound(15) price_rebound(15) drawdown(15) ma20(15)
+  trend(5) relative_strength(10) volume(5) momentum_20d(10) breakout(10)
+  valuation(10) profitability(10) dividend(10) earnings(10)
+  (괄호는 컴포넌트 만점; 마지막 4개는 Yahoo Finance info 기반)
+
+### 전략군별 가중치 (핵심 설계)
+
+| 전략 | rsi_state | rsi_rebound | price_rebound | drawdown | ma20 | trend | rel_str | volume | mom_20d | breakout | valuation | profit | dividend | earnings |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| general / other_etf | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| quality | 2 | 2 | 1 | 2 | 2 | 3 | 1 | 0 | 2 | 0 | 3 | 3 | 1 | 2 |
+| established_growth | 1 | 2 | 1 | 1 | 2 | 3 | 2 | 1 | 3 | 1 | 2 | 2 | 0 | 3 |
+| speculative | 1 | 3 | 3 | 1 | 1 | 2 | 3 | 2 | 2 | 2 | 0 | 0 | 0 | 1 |
+| broad_market_etf | 2 | 2 | 2 | 2 | 3 | 3 | 1 | 1 | 1 | 0 | 1 | 0 | 1 | 0 |
+| growth_etf | 1 | 2 | 1 | 1 | 2 | 3 | 3 | 1 | 3 | 2 | 0 | 0 | 0 | 0 |
+| sector_etf | 1 | 1 | 1 | 1 | 2 | 2 | 2 | 1 | 3 | 2 | 0 | 0 | 0 | 0 |
+| dividend_etf | 1 | 1 | 0 | 2 | 2 | 3 | 1 | 0 | 1 | 0 | 1 | 1 | 3 | 0 |
+| income_etf | 1 | 1 | 0 | 2 | 2 | 2 | 1 | 0 | 0 | 0 | 1 | 2 | 3 | 0 |
+
+- `general`(= `other_etf`)은 V7과 **수학적으로 동일한 점수**를 냅니다 (V7 8개 컴포넌트 가중치 1,
+  신규 6개 가중치 0). V7 대비 비교의 대조군입니다.
+- 예: speculative는 상대강도/되돌림 반등에, quality는 밸류/수익성/중기추세에 높은 가중치.
+  (speculative의 모멘텀/돌파 가중치는 52주 백테스트에서 고점 추격 과대평가가 확인되어 3→2로 하향)
+
+### Risk / Confidence (독립 차원)
+
+- 기회 점수와 리스크는 **독립 차원**입니다. 좋은 기회 ≠ 안전한 투자.
+- `risk_score` (가중치 합 100): 실현변동성 30 + beta 20 + 고점대비 눌림 20 +
+  거래량 이상 15 + 수익성/밸류에이션 15 → 0~100점
+- `risk_level`: 0~34 LOW, 35~54 MEDIUM, 55~74 HIGH, 75~100 VERY_HIGH
+- `signal_confidence = 0.40 + 0.60 × (score/100)` — 점수 기반 신뢰도 (0.4~1.0)
+- `classification_confidence`: asset_classification 분류 신뢰도 (별도 저장)
+
+### 실행
+
+```bash
+# 스캔 (V8 엔진 자동 사용 — 신호는 score_version=8로 저장)
+./run_local.sh --no-db --no-telegram
+
+# 백테스트 (V7 vs V8 비교)
+python backtest.py --mode v7 --weeks 26 --json /tmp/bt_v7.json
+python backtest.py --mode v8 --weeks 26 --json /tmp/bt_v8.json
+
+# V7+V8 동시 실행 (JSON에 modes.v7/v8 서브리포트 포함 — 대시보드 비교용)
+python backtest.py --mode both --weeks 52 --json dashboard/data/backtest.json
+```
+
+### V8 Supabase
+
+기존 DB에 신규 컬럼이 필요하므로 `supabase_v8_phase2_migration.sql`을 SQL Editor에서 한 번
+실행하세요. signals에 `strategy_type`, `opportunity_score`, `risk_level`, `risk_score`,
+`signal_confidence`, `classification_confidence`와 4개 설명 축 점수(`technical_score`,
+`momentum_score`, `fundamental_score`, `valuation_score`), 컴포넌트 상세(`components` jsonb),
+daily_data에 `strategy_type`, `opportunity_score`, `risk_level`과 동일한 4개 축 점수 +
+`components` jsonb 컬럼을 추가합니다 (idempotent, 재실행 가능).
+새 스캔/백필은 `score_version=8`로 저장되며, 기존 V7 데이터(`score_version=7`)는 그대로 유지됩니다.
+
+대시보드에서 종목 분류(전략군)도 읽으므로 `supabase_dashboard_rls.sql`을 재실행해
+`asset_classification` 읽기 정책을 추가하세요 (이미 실행한 경우에도 idempotent라 재실행 가능).
+
+### V8 대시보드 개편
+
+대시보드는 V8 기준으로 개편되어 다음이 반영됩니다.
+
+- 신호·성과 탭: 전략/리스크/기회점수/판단(BUY·WATCH 배지)/신뢰도 컬럼 + 빈 상태 시 안내(히트맵·현황 이동)
+- 점수판/현황: 전략·리스크 배지, 후보 카드에 판단 표시, 근접 후보 50~54점 기준
+- 상세 탭: 툴팁에 전략/리스크 + 4축 점수(기술/모멘텀/펀더멘털/밸류) 표시
+- 백테스트 탭: `--mode both` 생성 JSON 기준 **V8/V7 버전 토글** (기본 V8, 단일 형식이면 자동 폴백)
+- 주간 리포트(`report.py`/`send_weekly_report.py`): `score_version=8` 신호만 집계 + V8 백테스트 요약
+
+대시보드/워크플로우는 `score_version=8` 데이터만 조회하므로, 백필 후에는
+`backtest.py --mode both --json dashboard/data/backtest.json`으로 backtest.json을
+다시 생성해야 V8 토글이 동작합니다 (워크플로우가 매주 자동 갱신).

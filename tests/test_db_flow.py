@@ -54,6 +54,14 @@ class _FakeQuery:
         self._db.calls.append(("upsert", self._table, payload, on_conflict))
         return self
 
+    def update(self, payload):
+        self._db.calls.append(("update", self._table, payload))
+        return self
+
+    def eq(self, col, val):
+        self._filters.append(("eq", col, val))
+        return self
+
     def delete(self):
         self._pending_delete = True
         return self
@@ -118,12 +126,11 @@ def test_update_returns_computes_returns(monkeypatch):
     db = _FakeDb({"signals": signals, "daily_data": daily})
     monkeypatch.setattr("stock_scanner.get_db", lambda: db)
     update_returns()
-    upserts = [c for c in db.calls if c[0] == "upsert"]
-    assert len(upserts) == 1
-    _, table, payload, on_conflict = upserts[0]
+    updates = [c for c in db.calls if c[0] == "update"]
+    assert len(updates) == 1
+    _, table, payload = updates[0]
     assert table == "signals"
-    assert on_conflict == "id"
-    assert payload == [{"id": 1, "return_5d": (105.0 / 100.0 - 1) * 100}]
+    assert payload == {"return_5d": (105.0 / 100.0 - 1) * 100}
 
 
 def test_update_returns_skips_completed_signals(monkeypatch):
@@ -140,12 +147,11 @@ def test_update_returns_skips_completed_signals(monkeypatch):
     db = _FakeDb({"signals": signals, "daily_data": daily})
     monkeypatch.setattr("stock_scanner.get_db", lambda: db)
     update_returns()
-    upserts = [c for c in db.calls if c[0] == "upsert"]
-    assert len(upserts) == 1
-    _, table, payload, on_conflict = upserts[0]
+    updates = [c for c in db.calls if c[0] == "update"]
+    assert len(updates) == 1
+    _, table, payload = updates[0]
     assert table == "signals"
-    assert on_conflict == "id"
-    assert payload == [{"id": 2, "return_5d": (205.0 / 200.0 - 1) * 100}]
+    assert payload == {"return_5d": (205.0 / 200.0 - 1) * 100}
 
 
 def test_update_returns_skips_when_insufficient_data(monkeypatch):
@@ -156,7 +162,7 @@ def test_update_returns_skips_when_insufficient_data(monkeypatch):
     db = _FakeDb({"signals": signals, "daily_data": daily})
     monkeypatch.setattr("stock_scanner.get_db", lambda: db)
     update_returns()
-    assert [c for c in db.calls if c[0] == "upsert"] == []
+    assert [c for c in db.calls if c[0] == "update"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +181,11 @@ def test_save_daily_upsert_payload(monkeypatch):
         "date": "2026-08-13", "ticker": "AAPL", "price": 100.0,
         "rsi": 30.0, "prev_rsi": 35.0, "ma20": 99.0, "ma50": 98.0,
         "drawdown": -12.0, "volume_ratio": 1.5, "score": 80, "relative_strength_5d": 1.5,
-        "score_version": 7,
+        "score_version": 8, "strategy_type": None, "opportunity_score": None,
+        "risk_level": None,
+        "technical_score": None, "momentum_score": None,
+        "fundamental_score": None, "valuation_score": None,
+        "components": None,
     }, None)]
 
 
@@ -196,8 +206,14 @@ def test_save_signal_above_threshold_upsert(monkeypatch):
     save_signal(x, "2026-08-13")
     assert db.calls == [("upsert", "signals", {
         "signal_date": "2026-08-13", "ticker": "AAPL",
-        "signal_price": 100.0, "score": 70, "score_version": 7,
+        "signal_price": 100.0, "score": 70, "score_version": 8,
         "rsi": 30.0, "drawdown": -12.0,
+        "strategy_type": None, "opportunity_score": None,
+        "risk_level": None, "risk_score": None,
+        "signal_confidence": None, "classification_confidence": None,
+        "technical_score": None, "momentum_score": None,
+        "fundamental_score": None, "valuation_score": None,
+        "components": None,
     }, "signal_date,ticker")]
 
 
@@ -319,6 +335,9 @@ def test_analyze_recent_data_returns_signal(monkeypatch):
     df = pd.DataFrame({"Close": [100.0], "High": [102.0], "Volume": [1_000_000]},
                       index=idx)
     monkeypatch.setattr("stock_scanner.fetch_history", lambda t: df)
-    monkeypatch.setattr("stock_scanner.compute_signal",
-                        lambda t, d, m: {"ticker": t, "score": 80})
+    monkeypatch.setattr("stock_scanner.fetch_info", lambda t: None)
+    monkeypatch.setattr("stock_scanner.resolve_strategy",
+                        lambda t, db=None, info=None: ("general", 0.5))
+    monkeypatch.setattr("stock_scanner.compute_signal_v8",
+                        lambda t, d, m, s, i, c: {"ticker": t, "score": 80})
     assert analyze("AAPL") == {"ticker": "AAPL", "score": 80}

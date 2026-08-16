@@ -23,6 +23,6 @@ jobs:
       - name: Classify watchlist
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python classify_watchlist.py

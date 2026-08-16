@@ -43,7 +43,7 @@
             <div class="stat-value" id="status-latest-date">-</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">후보 (점수 ≥ 65)</div>
+            <div class="stat-label">후보 (점수 ≥ 55)</div>
             <div class="stat-value" id="status-candidate-count">-</div>
           </div>
           <div class="stat-card">
@@ -52,7 +52,7 @@
           </div>
         </div>
         <h2 style="font-size:15px;margin:6px 0 12px;">후보 상위 3종목</h2>
-        <h2 style="font-size:15px;margin:6px 0 12px;" id="status-near-title">근접 후보 (60~64점)</h2>
+        <h2 style="font-size:15px;margin:6px 0 12px;" id="status-near-title">근접 후보 (50~54점)</h2>
         <div class="candidate-cards" id="status-top-candidates"></div>
         <div class="candidate-cards" id="status-near-candidates"></div>
       </div>
@@ -146,7 +146,7 @@
           </div>
           <div id="detail-tooltip-summary" class="chart-summary"></div>
           <div id="detail-chart-panels" class="detail-chart-panels"></div>
-          <div class="chart-legend-hint">가격/MA20/MA50 · RSI · V7 점수 · 거래량을 원하는 조합으로 선택할 수 있습니다.</div>
+            <div class="chart-legend-hint">가격/MA20/MA50 · RSI · V8 점수 · 거래량을 원하는 조합으로 선택할 수 있습니다.</div>
         </div>
       </div>
     </section>
@@ -172,8 +172,13 @@
               <tr>
                 <th>신호일</th>
                 <th>종목</th>
+                <th>전략</th>
+                <th class="badge-cell">리스크</th>
+                <th>기회점수</th>
+                <th class="badge-cell">판단</th>
                 <th>신호가</th>
                 <th>점수</th>
+                <th>신뢰도</th>
                 <th>수익률 5일</th>
                 <th>수익률 10일</th>
                 <th>수익률 20일</th>
@@ -183,7 +188,7 @@
           </table>
         </div>
         <div id="signals-empty" class="empty-card hidden">
-          아직 65점 이상 V7 신호가 없습니다. <strong>히트맵</strong> 탭에서 전체 종목 점수 추이를, <strong>현황</strong> 탭에서 근접 후보(60~64점)를 확인하세요.
+          아직 V8 기회 신호가 없습니다. V8 규칙: 기회점수 55점 이상이고 리스크가 VERY_HIGH가 아니면 <strong>BUY</strong>, 그 외는 <strong>WATCH</strong> 후보입니다. <strong>히트맵</strong> 탭에서 전체 종목 점수 추이를, <strong>현황</strong> 탭에서 근접 후보(50~54점)를 확인하세요.
           <div class="links">
             <button id="signals-go-heatmap" type="button">히트맵 탭 보기</button>
             <button id="signals-go-status" type="button">현황 탭 보기</button>
@@ -211,8 +216,13 @@
       <div id="backtest-empty" class="empty hidden">아직 백테스트 데이터가 없습니다</div>
       <div id="backtest-content" class="hidden">
         <div class="info-bar" id="backtest-info"></div>
+        <div class="version-toggle hidden" id="backtest-version-toggle">
+          <span class="toolbar-title">버전</span>
+          <label><input type="radio" name="bt-version" value="v8" checked> V8</label>
+          <label><input type="radio" name="bt-version" value="v7"> V7</label>
+        </div>
         <div class="chart-box">
-          <h3>V7 점수구간별 성과</h3>
+          <h3 id="backtest-chart-title">V8 점수구간별 성과</h3>
           <div class="chart-hint">5일 cooldown 적용 후의 점수 구간별 결과입니다. 점수가 높을수록 성과가 좋아지는지 확인하세요.</div>
           <div class="chart-canvas-wrap"><canvas id="chart-backtest"></canvas></div>
         </div>

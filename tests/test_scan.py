@@ -23,7 +23,7 @@ def test_build_alert_message_sorted_and_formatted():
 def test_scan_no_db_no_notify_returns_candidates(monkeypatch):
     fake = {"ticker": "AAPL", "score": 80, "price": 100.0, "rsi": 30.0,
             "drawdown": -12.0, "conditions": ["RSI<35 과매도"]}
-    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None, db=None: fake)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["AAPL"])
 
     cands, failures = scan(persist=False, notify=False)
@@ -34,7 +34,7 @@ def test_scan_no_db_no_notify_returns_candidates(monkeypatch):
 def test_scan_filters_below_alert_score(capsys, monkeypatch):
     fake = {"ticker": "MSFT", "score": 40, "price": 100.0, "rsi": 50.0,
             "drawdown": -5.0, "conditions": []}
-    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None, db=None: fake)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["MSFT"])
 
     cands, failures = scan(persist=False, notify=False)
@@ -45,7 +45,7 @@ def test_scan_filters_below_alert_score(capsys, monkeypatch):
 
 
 def test_scan_collects_failures(capsys, monkeypatch):
-    def fake_analyze(t, date=None):
+    def fake_analyze(t, date=None, db=None):
         if t == "BAD":
             raise RuntimeError("network")
         return {"ticker": t, "score": 80, "price": 100.0, "rsi": 30.0,
@@ -64,7 +64,7 @@ def test_scan_threshold_excludes_below(monkeypatch):
     """임계값 이하 점수는 후보에서 제외되어야 한다."""
     fake = {"ticker": "LOW", "score": 30, "price": 100.0, "rsi": 50.0,
             "drawdown": -5.0, "conditions": []}
-    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None, db=None: fake)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["LOW"])
 
     cands, failures = scan(persist=False, notify=False, threshold=80)
@@ -76,7 +76,7 @@ def test_scan_threshold_includes_above(monkeypatch):
     """임계값 이상 점수는 후보에 포함되어야 한다."""
     fake = {"ticker": "HIGH", "score": 90, "price": 100.0, "rsi": 30.0,
             "drawdown": -12.0, "conditions": ["RSI<35 과매도"]}
-    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None, db=None: fake)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["HIGH"])
 
     cands, failures = scan(persist=False, notify=False, threshold=80)
@@ -86,7 +86,7 @@ def test_scan_threshold_includes_above(monkeypatch):
 
 def test_scan_parallel_processes_all_and_collects_failures(capsys, monkeypatch):
     """병렬 스캔이 전 종목을 처리하고 실패 ticker를 failures에 수집한다."""
-    def fake_analyze(t, date=None):
+    def fake_analyze(t, date=None, db=None):
         if t == "BAD":
             raise RuntimeError("network")
         return {"ticker": t, "score": 80, "price": 100.0, "rsi": 30.0,
@@ -110,7 +110,7 @@ def test_scan_analyzes_concurrently(monkeypatch):
     lock = threading.Lock()
     active, peak = 0, 0
 
-    def fake_analyze(t, date=None):
+    def fake_analyze(t, date=None, db=None):
         nonlocal active, peak
         with lock:
             active += 1

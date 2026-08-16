@@ -25,11 +25,14 @@ from asset_classification import classify_asset
 
 def get_supabase_client():
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+    # 쓰기(upsert)를 수행하므로 RLS를 우회하는 service_role 키(SUPABASE_KEY)를 사용한다.
+    # anon 키(SUPABASE_PUBLISHABLE_KEY)는 읽기 전용이며, asset_classification에
+    # RLS가 적용되면 쓰기가 거부된다.
+    key = os.environ.get("SUPABASE_KEY")
 
     if not url or not key:
         raise RuntimeError(
-           "SUPABASE_URL 또는 SUPABASE_PUBLISHABLE_KEY 환경변수가 없습니다." 
+           "SUPABASE_URL 또는 SUPABASE_KEY 환경변수가 없습니다." 
         )
 
     return create_client(url, key)
@@ -107,19 +110,6 @@ def classify_one(supabase, ticker: str):
         return "skipped_manual"
 
     info = fetch_yahoo_info(ticker)
-    if True:
-        print("[DEBUG] AAPL Yahoo metadata")
-        for key in (
-	    "quoteType",
-	    "marketCap",
-	    "sector",
-	    "industry",
-	    "revenueGrowth",
-	    "earningsGrowth",
-	    "beta",
-        ):
-            print(f"  {key}: {info.get(key)}")
-
     result = classify_asset(ticker, info)
 
     save_classification(supabase, result)

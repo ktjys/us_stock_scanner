@@ -93,7 +93,7 @@ def test_scan_skips_on_holiday_before_any_logic(capsys, monkeypatch):
 def test_scan_skips_on_holiday_with_date(capsys, monkeypatch):
     monkeypatch.setattr("stock_scanner.is_us_market_holiday", lambda d: True)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["AAPL"])
-    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: None)
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None, db=None: None)
 
     cands, failures = scan(persist=False, notify=False)
     assert cands == []
@@ -107,7 +107,7 @@ def test_scan_proceeds_on_normal_weekday(monkeypatch):
     fake = {"ticker": "AAPL", "score": 80, "price": 100.0, "rsi": 30.0,
             "drawdown": -12.0, "conditions": ["RSI<35 과매도"]}
     monkeypatch.setattr("stock_scanner.is_us_market_holiday", lambda d: False)
-    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None: fake)
+    monkeypatch.setattr("stock_scanner.analyze", lambda t, date=None, db=None: fake)
     monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["AAPL"])
 
     cands, failures = scan(persist=False, notify=False)

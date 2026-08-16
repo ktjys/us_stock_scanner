@@ -21,9 +21,11 @@ from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
                                     USFederalHolidayCalendar)
 from supabase import create_client
 
+from asset_classification import classify_asset
+
 WATCHLIST_FILE = "watchlist.csv"
-ALERT_SCORE = 65  # V7 provisional; 백테스트 결과 확인 후 조정
-SCORE_VERSION = 7
+ALERT_SCORE = 55  # V8: 55-59 밴드가 유일한 기회 구간 (52주 백테스트 검증)
+SCORE_VERSION = 8
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
@@ -287,8 +289,125 @@ def compute_signal(ticker: str, df: pd.DataFrame,
                 data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
 
 
-def analyze(ticker: str, date: str | None = None) -> dict[str, Any] | None:
-    """ticker의 데이터를 받아 V7 compute_signal()로 신호를 계산한다."""
+def compute_signal_v8(ticker: str, df: pd.DataFrame,
+                      market_df: pd.DataFrame | None = None,
+                      strategy: str = "general",
+                      info: dict | None = None,
+                      classification_confidence: float = 0.5) -> dict[str, Any] | None:
+    """가격 데이터프레임에서 V8 전략 인식 신호를 계산한다 (순수 함수).
+
+    opportunity_engine의 전략별 가중치로 opportunity_score를 산출하고
+    risk_level/신뢰도를 함께 반환한다. V7 compute_signal()은 그대로 유지된다.
+    """
+    if df.empty:
+        return None
+
+    df = df.copy()
+    df["rsi"] = rsi(df["Close"])
+    df["ma20"] = df["Close"].rolling(20).mean()
+    df["ma50"] = df["Close"].rolling(50).mean()
+    df["high60"] = df["High"].rolling(60).max()
+    df["avgvol"] = df["Volume"].rolling(20).mean()
+    df = df.dropna()
+    if len(df) < 3:
+        return None
+
+    a, b, c = df.iloc[-1], df.iloc[-2], df.iloc[-3]
+    price = float(a["Close"])
+    rv = float(a["rsi"])
+    prev = float(b["rsi"])
+    ma20 = float(a["ma20"])
+    ma50 = float(a["ma50"])
+    dd = (price / float(a["high60"]) - 1) * 100
+    vr = float(a["Volume"]) / float(a["avgvol"])
+    rs5 = _relative_strength_5d(df, market_df) if market_df is not None else None
+
+    # opportunity_engine은 stock_scanner를 모듈 레벨에서 임포트하지 않으므로
+    # 여기서는 lazy import로 순환 임포트를 피한다.
+    from opportunity_engine import (component_sub_scores,
+                                    compute_fundamental_components,
+                                    compute_technical_components,
+                                    opportunity_score, risk_score,
+                                    signal_confidence)
+
+    i = len(df) - 1
+    comps = compute_technical_components(df, i, market_df)
+    comps.update(compute_fundamental_components(info))
+    oscore = opportunity_score(comps, strategy)
+    rscore, rlevel = risk_score(df, i, info)
+    conf = signal_confidence(oscore)
+    subs = component_sub_scores(comps)
+
+    # 알림 메시지의 기술적 조건 텍스트는 V7 조건문을 그대로 사용한다
+    # (V8 전략별 스코어링과 무관하게 동작하는 표시용 정보).
+    _, cond, _ = score_signal(
+        price, rv, prev, ma20, ma50, dd, vr,
+        ma50_prev=float(b["ma50"]), prev_price=float(b["Close"]),
+        ma20_prev=float(b["ma20"]), relative_strength_5d=rs5,
+        prev2_rsi=float(c["rsi"]),
+    )
+    return dict(ticker=ticker, price=price, rsi=rv, prev_rsi=prev, prev2_rsi=float(c["rsi"]),
+                ma20=ma20, ma50=ma50, drawdown=dd,
+                volume_ratio=vr, relative_strength_5d=rs5,
+                score=oscore, conditions=cond,
+                score_version=SCORE_VERSION,
+                strategy_type=strategy,
+                classification_confidence=classification_confidence,
+                opportunity_score=oscore,
+                risk_level=rlevel, risk_score=rscore,
+                signal_confidence=conf,
+                technical_score=subs["technical_score"],
+                momentum_score=subs["momentum_score"],
+                fundamental_score=subs["fundamental_score"],
+                valuation_score=subs["valuation_score"],
+                components=comps,
+                data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
+
+
+def fetch_info(ticker: str) -> dict | None:
+    """Yahoo Finance 메타데이터를 best-effort로 조회한다 (실패 시 None)."""
+    try:
+        info = yf.Ticker(ticker).info
+        return info if info else None
+    except Exception:  # noqa: BLE001 - 메타데이터 부재는 스코어링에 치명적이지 않음
+        return None
+
+
+def resolve_strategy(ticker: str, db: Any | None = None,
+                     info: dict | None = None) -> tuple[str, float]:
+    """ticker의 strategy_type과 분류 confidence를 결정한다.
+
+    우선순위:
+      1. DB asset_classification (사용자 manual override 포함)
+      2. 즉석 분류 (info가 있으면 classify_asset)
+      3. general 폴백
+    """
+    if db is not None:
+        try:
+            rows = (db.table("asset_classification")
+                    .select("strategy_type", "confidence")
+                    .eq("ticker", ticker)
+                    .execute().data or [])
+            if rows and rows[0].get("strategy_type"):
+                return rows[0]["strategy_type"], float(rows[0].get("confidence") or 0.5)
+        except Exception:  # noqa: BLE001 - 테이블 미존재 등, 즉석 분류로 폴백
+            pass
+    if info:
+        try:
+            c = classify_asset(ticker, info)
+            return c.strategy_type, c.confidence
+        except Exception:  # noqa: BLE001
+            pass
+    return "general", 0.5
+
+
+def analyze(ticker: str, date: str | None = None,
+            db: Any | None = None) -> dict[str, Any] | None:
+    """ticker의 데이터를 받아 V8 전략 인식 신호를 계산한다.
+
+    Yahoo 가격 데이터 + 메타데이터(info)를 받아 전략을 결정하고,
+    V8 Opportunity Engine으로 opportunity_score/risk/confidence를 산출한다.
+    """
     df = fetch_history(ticker)
     if df.empty:
         return None
@@ -300,7 +419,9 @@ def analyze(ticker: str, date: str | None = None) -> dict[str, Any] | None:
         if age > STALE_DATA_DAYS:
             print(f"{ticker}: 최근 데이터가 {age}일 전 ({last.date()}) - 스킵")
             return None
-    return compute_signal(ticker, df, _market_history())
+    info = fetch_info(ticker)
+    strategy, cconf = resolve_strategy(ticker, db, info)
+    return compute_signal_v8(ticker, df, _market_history(), strategy, info, cconf)
 
 
 
@@ -318,6 +439,14 @@ def save_daily(x: dict[str, Any], date: str) -> None:
         "drawdown": x["drawdown"], "volume_ratio": x["volume_ratio"],
         "relative_strength_5d": x.get("relative_strength_5d"),
         "score": x["score"], "score_version": SCORE_VERSION,
+        "strategy_type": x.get("strategy_type"),
+        "opportunity_score": x.get("opportunity_score"),
+        "risk_level": x.get("risk_level"),
+        "technical_score": x.get("technical_score"),
+        "momentum_score": x.get("momentum_score"),
+        "fundamental_score": x.get("fundamental_score"),
+        "valuation_score": x.get("valuation_score"),
+        "components": x.get("components"),
     }).execute()
 
 
@@ -328,6 +457,17 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         "signal_date": date, "ticker": x["ticker"],
         "signal_price": x["price"], "score": x["score"], "score_version": SCORE_VERSION,
         "rsi": x["rsi"], "drawdown": x["drawdown"],
+        "strategy_type": x.get("strategy_type"),
+        "opportunity_score": x.get("opportunity_score"),
+        "risk_level": x.get("risk_level"),
+        "risk_score": x.get("risk_score"),
+        "signal_confidence": x.get("signal_confidence"),
+        "classification_confidence": x.get("classification_confidence"),
+        "technical_score": x.get("technical_score"),
+        "momentum_score": x.get("momentum_score"),
+        "fundamental_score": x.get("fundamental_score"),
+        "valuation_score": x.get("valuation_score"),
+        "components": x.get("components"),
     }, on_conflict="signal_date,ticker").execute()
 
 
@@ -510,6 +650,8 @@ def build_alert_message(candidates: list[dict[str, Any]], date: str) -> str:
         msg += (f"{'🔥' if x['score'] >= 80 else '🟢'} {x['ticker']} "
                 f"{x['score']}점\n"
                 f"가격 ${x['price']:.2f} | RSI {x['rsi']:.1f}\n"
+                f"전략: {x.get('strategy_type', 'general')} | "
+                f"Risk: {x.get('risk_level', '-')}\n"
                 f"고점대비 {x['drawdown']:.1f}%\n"
                 f"조건: {', '.join(x['conditions'])}\n\n")
     return msg
@@ -534,7 +676,7 @@ def scan(date: str | None = None,
 
     def _process(ticker: str) -> tuple[str, dict[str, Any] | None, Exception | None]:
         try:
-            x = analyze(ticker, date)
+            x = analyze(ticker, date, db)
             if x and persist:
                 market_date = x.get("data_date", date)
                 save_daily(x, market_date)
@@ -586,7 +728,7 @@ def scan(date: str | None = None,
 def main() -> None:
     parser = argparse.ArgumentParser(description="미국주식 스캐너")
     parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
-                        help="신호 임계값 (기본 65)")
+                        help="신호 임계값 (기본 55)")
     args = parser.parse_args()
     _, failures = scan(threshold=args.threshold)
     if failures:

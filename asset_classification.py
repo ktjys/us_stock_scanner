@@ -30,10 +30,10 @@ ETF_STRATEGIES = {
 }
 
 EQUITY_STRATEGIES = {
-    "quality_blue_chip",
-    "growth",
-    "high_volatility_growth",
-    "general_equity",
+    "quality",
+    "established_growth",
+    "speculative",
+    "general",
 }
 
 

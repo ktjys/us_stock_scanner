@@ -9,7 +9,11 @@ from backfill_daily import _backfill_ticker, _promote_signals
 from stock_scanner import compute_signal
 
 SCHEMA_KEYS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
-               "drawdown", "volume_ratio", "relative_strength_5d", "score", "score_version")
+               "drawdown", "volume_ratio", "relative_strength_5d", "score",
+               "score_version", "strategy_type", "classification_confidence",
+               "opportunity_score", "risk_level", "risk_score",
+               "signal_confidence", "technical_score", "momentum_score",
+               "fundamental_score", "valuation_score", "components")
 
 
 def _make_df(n=100, seed=42):
@@ -34,7 +38,7 @@ def _backfill(ticker, df):
 
 
 def _make_signal_df():
-    """급락 후 반등 구간을 만들어 65점 이상 신호가 나오는 df."""
+    """급락 후 반등 구간을 만들어 ALERT_SCORE 이상 신호가 나오는 df."""
     closes = []
     c = 100.0
     for _ in range(60):  # 완만한 하락 (고점 100 유지)

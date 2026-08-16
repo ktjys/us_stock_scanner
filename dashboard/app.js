@@ -10,9 +10,51 @@
 (function () {
   "use strict";
 
-var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
-var NEAR_THRESHOLD = 60;  // V7 근접 후보 임계점 (60~64점)
-var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
+  var SCORE_THRESHOLD = 55; // stock_scanner.ALERT_SCORE 와 동일
+  var NEAR_THRESHOLD = 50;  // V8 근접 후보 임계점 (50~54점)
+  var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
+
+  // ---- V8 전략군 한글 라벨 ----
+  var STRATEGY_LABELS = {
+    general: "일반",
+    quality: "우량주",
+    established_growth: "성장주",
+    speculative: "고변동",
+    broad_market_etf: "시장ETF",
+    growth_etf: "성장ETF",
+    sector_etf: "섹터ETF",
+    dividend_etf: "배당ETF",
+    income_etf: "소득ETF",
+    other_etf: "기타ETF"
+  };
+  function strategyLabel(t) {
+    return STRATEGY_LABELS[t] || t || "-";
+  }
+
+  // ---- V8 BUY/WATCH 판단 규칙 (사용자 승인) ----
+  // 기회점수 >= 55 이고 리스크가 VERY_HIGH 가 아니면 BUY, 그 외 WATCH
+  function judgeSignal(score, riskLevel) {
+    if (score != null && score >= SCORE_THRESHOLD && riskLevel !== "VERY_HIGH") return "BUY";
+    return "WATCH";
+  }
+
+  // V8 행의 점수: opportunity_score 우선, 없으면 레거시 score
+  function rowScore(r) {
+    return r.opportunity_score != null ? r.opportunity_score : r.score;
+  }
+
+  // ---- 배지 HTML 헬퍼 ----
+  function strategyBadge(r) {
+    return '<span class="badge badge-strategy">' + strategyLabel(r.strategy_type) + "</span>";
+  }
+  function riskBadge(r) {
+    var lvl = r.risk_level || "-";
+    return '<span class="badge badge-risk risk-' + String(lvl).toLowerCase() + '">' + lvl + "</span>";
+  }
+  function judgeBadge(r) {
+    var j = judgeSignal(rowScore(r), r.risk_level);
+    return '<span class="badge badge-judge judge-' + j.toLowerCase() + '">' + j + "</span>";
+  }
 
   // ---- 설정 로드 (config.js 가 window.DASHBOARD_CONFIG 로 노출) ----
   var CONFIG = window.DASHBOARD_CONFIG || null;
@@ -249,7 +291,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         var dRes = await sb
           .from("daily_data")
           .select("date")
-          .eq("score_version", 6)
+          .eq("score_version", 8)
           .order("date", { ascending: false })
           .limit(1);
         if (dRes.error) throw dRes.error;
@@ -257,14 +299,14 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
         var rows = [];
         if (latest) {
-          var rRes = await sb.from("daily_data").select("*").eq("date", latest).eq("score_version", 6);
+          var rRes = await sb.from("daily_data").select("*").eq("date", latest).eq("score_version", 8);
           if (rRes.error) throw rRes.error;
           rows = rRes.data || [];
         }
 
         var candidates = rows
-          .filter(function (r) { return r.score >= SCORE_THRESHOLD; })
-          .sort(function (a, b) { return b.score - a.score; });
+          .filter(function (r) { return rowScore(r) >= SCORE_THRESHOLD; })
+          .sort(function (a, b) { return rowScore(b) - rowScore(a); });
 
         $("status-latest-date").textContent = latest || "데이터 없음";
         // 스캔 중단 감지: 오늘 UTC 기준 3일 초과 시 경고. 주말(토/일)은 미표시,
@@ -302,8 +344,9 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
             card.innerHTML =
               '<div class="ticker">' + r.ticker + "</div>" +
               '<div class="name">' + (nameMap[r.ticker] || "") + "</div>" +
+              '<div class="card-badges">' + strategyBadge(r) + riskBadge(r) + judgeBadge(r) + "</div>" +
               '<div class="metrics">' +
-              '<div class="metric"><div class="m-label">점수</div><div class="m-value">' + r.score + "</div></div>" +
+              '<div class="metric"><div class="m-label">점수</div><div class="m-value">' + rowScore(r) + "</div></div>" +
               '<div class="metric"><div class="m-label">RSI</div><div class="m-value">' + fmtNum(r.rsi) + "</div></div>" +
               '<div class="metric"><div class="m-label">고점대비</div><div class="m-value ' + pctClass(r.drawdown) + '">' + fmtNum(r.drawdown) + "%</div></div>" +
               "</div>";
@@ -312,8 +355,8 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         }
         // ---- 근접 후보 (60~64점) 섹션 ----
         var nearCandidates = rows
-          .filter(function (r) { return r.score >= NEAR_THRESHOLD && r.score < SCORE_THRESHOLD; })
-          .sort(function (a, b) { return b.score - a.score; });
+          .filter(function (r) { return rowScore(r) >= NEAR_THRESHOLD && rowScore(r) < SCORE_THRESHOLD; })
+          .sort(function (a, b) { return rowScore(b) - rowScore(a); });
 
         var nearTitle = $("status-near-title");
         var nearBox = $("status-near-candidates");
@@ -327,8 +370,9 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
             card.innerHTML =
               '<div class="ticker">' + r.ticker + "</div>" +
               '<div class="name">' + (nameMap[r.ticker] || "") + "</div>" +
+              '<div class="card-badges">' + strategyBadge(r) + riskBadge(r) + judgeBadge(r) + "</div>" +
               '<div class="metrics">' +
-              '<div class="metric"><div class="m-label">점수</div><div class="m-value">' + r.score + "</div></div>" +
+              '<div class="metric"><div class="m-label">점수</div><div class="m-value">' + rowScore(r) + "</div></div>" +
               '<div class="metric"><div class="m-label">RSI</div><div class="m-value">' + fmtNum(r.rsi) + "</div></div>" +
               '<div class="metric"><div class="m-label">고점대비</div><div class="m-value ' + pctClass(r.drawdown) + '">' + fmtNum(r.drawdown) + "%</div></div>" +
               "</div>";
@@ -350,6 +394,8 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
   // =====================================================================
   var SB_COLS = [
     { key: "ticker", label: "종목", num: false },
+    { key: "strategy_type", label: "전략", num: false },
+    { key: "risk_level", label: "리스크", num: false },
     { key: "score", label: "점수", num: true },
     { key: "rsi", label: "RSI", num: true },
     { key: "prev_rsi", label: "전일RSI", num: true },
@@ -397,7 +443,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         var res = await sb
           .from("daily_data")
           .select("date")
-          .eq("score_version", 6)
+          .eq("score_version", 8)
           .order("date", { ascending: false })
           .limit(1000);
         if (res.error) throw res.error;
@@ -431,7 +477,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     await runLoad(
       "daily_data(" + date + ")",
       async function () {
-        var res = await sb.from("daily_data").select("*").eq("date", date).eq("score_version", 6);
+        var res = await sb.from("daily_data").select("*").eq("date", date).eq("score_version", 8);
         if (res.error) throw res.error;
         sbData = res.data || [];
         renderScoreboard();
@@ -490,19 +536,23 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     }
     sorted.forEach(function (r) {
       var tr = document.createElement("tr");
-      if (r.score >= SCORE_THRESHOLD) tr.className = "candidate";
+      if (rowScore(r) >= SCORE_THRESHOLD) tr.className = "candidate";
       SB_COLS.forEach(function (col) {
         var td = document.createElement("td");
         if (col.key === "ticker") {
           td.className = "ticker-cell";
           td.innerHTML = tickerLabel(r.ticker);
+        } else if (col.key === "strategy_type") {
+          td.innerHTML = strategyLabel(r.strategy_type);
+        } else if (col.key === "risk_level") {
+          td.innerHTML = riskBadge(r);
         } else if (col.key === "drawdown") {
           td.className = pctClass(r.drawdown);
           td.textContent = fmtNum(r.drawdown) + "%";
         } else if (col.key === "volume_ratio") {
           td.textContent = fmtNum(r.volume_ratio, 2);
         } else if (col.key === "score") {
-          td.textContent = r.score;
+          td.textContent = rowScore(r);
         } else {
           td.textContent = fmtNum(r[col.key]);
         }
@@ -528,7 +578,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       "daily_data(히트맵)",
       async function () {
         var rows = await fetchAllPaged(
-          sb.from("daily_data").select("*").eq("score_version", 6).order("date", { ascending: false }).order("ticker", { ascending: true })
+          sb.from("daily_data").select("*").eq("score_version", 8).order("date", { ascending: false }).order("ticker", { ascending: true })
         );
         // 최근 10개 날짜 (중복 제거, date desc 상태)
         var seen = {};
@@ -658,7 +708,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         }
 
         var rows = await fetchAllPaged(
-          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 6).order("date", { ascending: true })
+          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 8).order("date", { ascending: true })
         );
         var cutoff = dateMinusDays(detailPeriod * 30);
         rows = rows.filter(function (r) { return r.date >= cutoff; });
@@ -743,10 +793,16 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       '<div><b>가격</b><strong>' + fmtMoney(r.price) + '</strong></div>' +
       '<div><b>MA20</b><strong>' + fmtMoney(r.ma20) + '</strong></div>' +
       '<div><b>MA50</b><strong>' + fmtMoney(r.ma50) + '</strong></div>' +
-      '<div><b>점수</b><strong>' + fmtNum(r.score, 0) + '</strong></div>' +
+      '<div><b>점수</b><strong>' + fmtNum(rowScore(r), 0) + '</strong></div>' +
       '<div><b>RSI</b><strong>' + fmtNum(r.rsi, 1) + '</strong></div>' +
       '<div><b>거래량</b><strong>' + fmtNum(r.volume_ratio, 2) + 'x</strong></div>' +
-      '<div><b>QQQ 대비 5일</b><strong>' + fmtPct(r.relative_strength_5d) + '</strong></div>';
+      '<div><b>QQQ 대비 5일</b><strong>' + fmtPct(r.relative_strength_5d) + '</strong></div>' +
+      '<div><b>전략</b><strong>' + strategyLabel(r.strategy_type) + '</strong></div>' +
+      '<div><b>리스크</b><strong>' + (r.risk_level || "-") + '</strong></div>' +
+      '<div><b>기술</b><strong>' + fmtNum(r.technical_score) + '</strong></div>' +
+      '<div><b>모멘텀</b><strong>' + fmtNum(r.momentum_score) + '</strong></div>' +
+      '<div><b>펀더멘털</b><strong>' + fmtNum(r.fundamental_score) + '</strong></div>' +
+      '<div><b>밸류</b><strong>' + fmtNum(r.valuation_score) + '</strong></div>';
 
     (charts.detail || []).forEach(function (chart) {
       chart.$detailSelectedIndex = index;
@@ -786,7 +842,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     }
     if (panel === "score") {
       return {
-        title: "V7 점수",
+        title: "V8 점수",
         datasets: [
           { label:"점수", data:rows.map(function(r){return r.score;}), borderColor:DETAIL_COLORS.score, yAxisID:"y", borderWidth:2, pointRadius:0, tension:.12, spanGaps:true }
         ],
@@ -886,7 +942,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       "signals",
       async function () {
         var weeks = parseInt($("signals-period").value, 10);
-        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 6).order("signal_date", { ascending: false }));
+        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 8).order("signal_date", { ascending: false }));
 
         // 기간 필터: 오늘(UTC) - N주, signal_date >= cutoff (문자열 비교)
         if (weeks > 0) {
@@ -950,8 +1006,14 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       tdTk.className = "ticker-cell";
       tdTk.innerHTML = tickerLabel(r.ticker);
       tr.appendChild(tdTk);
+      tr.appendChild(cell(strategyLabel(r.strategy_type)));
+      tr.appendChild(cell(riskBadge(r), "badge-cell"));
+      tr.appendChild(cell(String(r.opportunity_score != null ? r.opportunity_score : (r.score != null ? r.score : "-"))));
+      tr.appendChild(cell(judgeBadge(r), "badge-cell"));
       tr.appendChild(cell(fmtPrice(r.signal_price)));
-      tr.appendChild(cell(String(r.score)));
+      tr.appendChild(cell(String(r.score != null ? r.score : "-")));
+      var conf = r.signal_confidence;
+      tr.appendChild(cell(conf == null || isNaN(conf) ? "-" : Math.round(conf * 100) + "%"));
       [r.return_5d, r.return_10d, r.return_20d].forEach(function (v) {
         if (v == null || isNaN(v)) tr.appendChild(cell("대기", "neutral"));
         else tr.appendChild(cell(fmtPct(v), pctClass(v)));
@@ -965,6 +1027,9 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
   // =====================================================================
   var backtestChart = null;
   var backtestLoaded = false;
+  var backtestData = null;
+  var backtestVersion = "v8";
+  var backtestToggleBound = false;
 
   function loadBacktest() {
     if (backtestLoaded) return;
@@ -980,12 +1045,32 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       })
       .then(function (data) {
         loadingEl.classList.add("hidden");
-        if (!data || data.version !== "v7" || !data.bands || !data.bands.length) {
-          emptyEl.textContent = "V7 백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
+        backtestData = data;
+        if (!data) {
+          emptyEl.textContent = "백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
           emptyEl.classList.remove("hidden");
           return;
         }
-        renderBacktest(data);
+        // version:"both" 형식(modes.v7/v8) 지원, 구버전 단일(v7/v6) 폴백 유지
+        var isBoth = !!(data.modes && (data.modes.v7 || data.modes.v8));
+        var toggle = $("backtest-version-toggle");
+        if (isBoth) {
+          toggle.classList.remove("hidden");
+          // 기본 V8 (V8 데이터가 없으면 V7로 폴백)
+          backtestVersion = (data.modes.v8 && data.modes.v8.bands && data.modes.v8.bands.length) ? "v8" : "v7";
+          var radios = toggle.querySelectorAll('input[name="bt-version"]');
+          radios.forEach(function (r) { r.checked = (r.value === backtestVersion); });
+          bindBacktestToggle();
+        } else {
+          toggle.classList.add("hidden");
+          backtestVersion = null; // 단일 형식
+          if (!data.bands || !data.bands.length) {
+            emptyEl.textContent = "백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
+            emptyEl.classList.remove("hidden");
+            return;
+          }
+        }
+        renderBacktest(data, backtestVersion);
         $("backtest-content").classList.remove("hidden");
       })
       .catch(function () {
@@ -995,7 +1080,42 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       });
   }
 
-  function renderBacktest(data) {
+  function bindBacktestToggle() {
+    if (backtestToggleBound) return;
+    backtestToggleBound = true;
+    var toggle = $("backtest-version-toggle");
+    function syncLabels() {
+      toggle.querySelectorAll('input[name="bt-version"]').forEach(function (radio) {
+        radio.parentNode.classList.toggle("active", radio.checked);
+      });
+    }
+    toggle.querySelectorAll('input[name="bt-version"]').forEach(function (radio) {
+      radio.addEventListener("change", function () {
+        if (!this.checked) return;
+        backtestVersion = this.value;
+        syncLabels();
+        renderBacktest(backtestData, backtestVersion);
+      });
+    });
+    syncLabels();
+  }
+
+  function renderBacktest(data, version) {
+    // both 형식이면 선택된 모드, 단일 형식이면 data 자체를 모드로 사용
+    var mode = (data.modes && version) ? data.modes[version] : data;
+    if (!mode || !mode.bands || !mode.bands.length) {
+      $("backtest-content").classList.add("hidden");
+      var emptyEl = $("backtest-empty");
+      emptyEl.textContent = "선택한 버전의 백테스트 데이터가 없습니다.";
+      emptyEl.classList.remove("hidden");
+      return;
+    }
+    $("backtest-empty").classList.add("hidden");
+    $("backtest-content").classList.remove("hidden");
+
+    var titleEl = $("backtest-chart-title");
+    if (titleEl) titleEl.textContent = (version ? version.toUpperCase() + " " : "") + "점수구간별 성과";
+
     var info = $("backtest-info");
     var parts = [];
     if (data.generated_at) {
@@ -1007,15 +1127,16 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     }
     if (data.ticker_count != null) parts.push("종목 수: " + data.ticker_count);
     if (data.cooldown_days != null) parts.push("중복 신호 cooldown: " + data.cooldown_days + "일");
-    if (data.raw_signal_count != null && data.cooldown_signal_count != null) {
-      parts.push("원신호 " + data.raw_signal_count + " → 채택 " + data.cooldown_signal_count);
+    // 원신호→채택 카운트는 선택된 모드의 값 사용
+    if (mode.raw_signal_count != null && mode.cooldown_signal_count != null) {
+      parts.push("원신호 " + mode.raw_signal_count + " → 채택 " + mode.cooldown_signal_count);
     }
     info.innerHTML = parts.map(function (p) { return "<span>" + p + "</span>"; }).join("");
 
-    var bands = data.bands || [];
+    var bands = mode.bands || [];
     renderBacktestChart(bands);
     renderBacktestThresholdTable(bands);
-    renderBacktestRecentTable(data.recent_signals || []);
+    renderBacktestRecentTable(mode.recent_signals || []);
   }
 
   function renderBacktestChart(bands) {

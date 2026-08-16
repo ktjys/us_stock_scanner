@@ -52,11 +52,13 @@ def test_quality_large_cap():
         "industry": "Software - Infrastructure",
         "marketCap": 3_000_000_000_000,
         "beta": 1.0,
+        "profitMargins": 0.30,
     })
-    assert result.strategy_type == "quality_blue_chip"
+    assert result.strategy_type == "quality"
+    assert result.confidence == 0.84
 
 
-def test_growth_equity():
+def test_established_growth():
     result = classify_asset("NVDA", {
         "quoteType": "EQUITY",
         "longName": "NVIDIA Corporation",
@@ -66,30 +68,36 @@ def test_growth_equity():
         "revenueGrowth": 0.30,
         "beta": 1.5,
     })
-    assert result.strategy_type == "growth"
+    assert result.strategy_type == "established_growth"
+    assert result.confidence == 0.84
 
 
-def test_high_volatility_growth():
+def test_speculative():
+    # 미래사업(원자력) + 음수 수익성 + 고변동 → speculative (근거 3개 → 0.86)
     result = classify_asset("OKLO", {
         "quoteType": "EQUITY",
         "longName": "Oklo Inc.",
         "sector": "Industrials",
         "industry": "Specialty Industrial Machinery",
+        "description": "Advanced nuclear power and small modular reactor company",
         "marketCap": 10_000_000_000,
         "revenueGrowth": 0.40,
         "beta": 2.2,
+        "profitMargins": -0.5,
     })
-    assert result.strategy_type == "high_volatility_growth"
+    assert result.strategy_type == "speculative"
+    assert result.confidence == 0.86
 
 
-def test_fallback_equity():
+def test_general_equity():
     result = classify_asset("TEST", {
         "quoteType": "EQUITY",
         "longName": "Test Company",
         "sector": "",
         "industry": "",
     })
-    assert result.strategy_type == "general_equity"
+    assert result.strategy_type == "general"
+    assert result.confidence == 0.55
 
 
 def test_empty_ticker_rejected():

@@ -7,7 +7,7 @@ import requests
 from supabase import create_client
 
 from backtest import build_backtest_summary
-from stock_scanner import _fetch_all
+from stock_scanner import SCORE_VERSION, _fetch_all
 from weekly_report import build_report_text
 
 
@@ -19,8 +19,10 @@ def main() -> None:
     bt_weeks = args.weeks if args.weeks and args.weeks > 0 else 26
 
     db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-    rows = _fetch_all(db.table("signals").select("*"))
-    backtest_summary = build_backtest_summary(weeks=bt_weeks)
+    rows = _fetch_all(
+        db.table("signals").select("*").eq("score_version", SCORE_VERSION)
+    )
+    backtest_summary = build_backtest_summary(weeks=bt_weeks, mode="v8")
     text = build_report_text(rows, weeks, backtest_summary)
 
     token = os.environ["TELEGRAM_BOT_TOKEN"]
