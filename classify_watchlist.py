@@ -107,7 +107,18 @@ def classify_one(supabase, ticker: str):
         return "skipped_manual"
 
     info = fetch_yahoo_info(ticker)
-
+    if ticker == "AAPL":
+        print("[DEBUG] AAPL Yahoo metadata")
+        for key in (
+	    "quoteType",
+	    "marketCap",
+	    "sector",
+	    "industry",
+	    "revenueGrowth",
+	    "earningsGrowth",
+	    "beta",
+        ):
+	    print(f"  {key}: {info.get(key)}")
     result = classify_asset(ticker, info)
 
     save_classification(supabase, result)
