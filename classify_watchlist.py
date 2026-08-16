@@ -25,11 +25,11 @@ from asset_classification import classify_asset
 
 def get_supabase_client():
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    key = os.environ.get("SUPABASE_PUBLISHABLE_KEY")
 
     if not url or not key:
         raise RuntimeError(
-            "SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY 환경변수가 없습니다."
+           ""SUPABASE_URL 또는 SUPABASE_PUBLISHABLE_KEY 환경변수가 없습니다." 
         )
 
     return create_client(url, key)
