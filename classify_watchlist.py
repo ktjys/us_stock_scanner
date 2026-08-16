@@ -107,7 +107,7 @@ def classify_one(supabase, ticker: str):
         return "skipped_manual"
 
     info = fetch_yahoo_info(ticker)
-    if ticker == "AAPL":
+    if True:
         print("[DEBUG] AAPL Yahoo metadata")
         for key in (
 	    "quoteType",
