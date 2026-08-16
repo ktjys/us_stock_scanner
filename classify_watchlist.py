@@ -29,7 +29,7 @@ def get_supabase_client():
 
     if not url or not key:
         raise RuntimeError(
-           ""SUPABASE_URL 또는 SUPABASE_PUBLISHABLE_KEY 환경변수가 없습니다." 
+           "SUPABASE_URL 또는 SUPABASE_PUBLISHABLE_KEY 환경변수가 없습니다." 
         )
 
     return create_client(url, key)
