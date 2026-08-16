@@ -96,89 +96,219 @@ def _classify_etf(info: dict[str, Any]) -> tuple[str, float, str]:
 
 
 def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
-    """Yahoo Finance metadata 형태의 dict를 받아 종목군을 자동 분류한다.
+    """Yahoo Finance metadata를 기반으로 장기투자용 전략군을 자동 분류한다.
 
-    이 함수는 네트워크를 사용하지 않는 순수 함수다. 따라서 실제 Yahoo 조회는
-    scanner/integration 계층에서 수행하고, 이 함수는 테스트 가능하게 유지한다.
+    분류는 투자 역할(strategy_type)을 결정하고,
+    세부 특성은 이후 Opportunity Engine에서 별도로 평가한다.
     """
+
     ticker = ticker.strip().upper()
     if not ticker:
         raise ValueError("ticker가 비어 있습니다.")
 
+    # ---------------------------------------------------------
+    # 1. ETF
+    # ---------------------------------------------------------
     if _is_etf(info):
         strategy, confidence, reason = _classify_etf(info)
-        return AssetClassification(ticker, "etf", strategy, confidence, "auto", reason)
+        return AssetClassification(
+            ticker, "etf", strategy, confidence, "auto", reason
+        )
 
+    # ---------------------------------------------------------
+    # 2. 기본 metadata
+    # ---------------------------------------------------------
     sector = _text(info.get("sector"))
     industry = _text(info.get("industry"))
     quote_type = _text(info.get("quoteType"))
+
     text = " ".join(
         _text(info.get(k))
-        for k in ("longName", "shortName", "industry", "sector", "description")
-    )
+        for k in (
+            "longName",
+            "shortName",
+            "industry",
+            "sector",
+            "description",
+        )
+    ).lower()
 
     beta = _num(info.get("beta"))
     market_cap = _num(info.get("marketCap"))
     revenue_growth = _num(info.get("revenueGrowth"))
     earnings_growth = _num(info.get("earningsGrowth"))
 
-    # 핵심 아이디어: "고변동"은 단순 성장 여부와 분리해서 판단한다.
-    # beta가 매우 높거나 성장성이 높으면서 변동성 특성이 강하면 별도 전략으로 보낸다.
+    # ---------------------------------------------------------
+    # 3. 투자 성격 판단용 기본 신호
+    # ---------------------------------------------------------
+
+    mega_cap = (
+        market_cap is not None
+        and market_cap >= 100_000_000_000
+    )
+
     high_volatility = (
-        (beta is not None and beta >= 1.8)
-        or any(x in text for x in ("biotechnology", "biotech", "speculative"))
+        beta is not None
+        and beta >= 1.8
     )
 
     growth_signal = (
         (revenue_growth is not None and revenue_growth >= 0.20)
-        or (earnings_growth is not None and earnings_growth >= 0.25)
-        or any(x in text for x in (
-            "growth", "software", "semiconductor", "internet", "ai ",
-            "artificial intelligence", "nuclear", "clean energy",
-        ))
+        or
+        (earnings_growth is not None and earnings_growth >= 0.25)
+        or
+        any(
+            x in text
+            for x in (
+                "growth",
+                "semiconductor",
+                "internet",
+                "software",
+                "artificial intelligence",
+                " ai ",
+            )
+        )
     )
 
-    # 매우 큰 시총 + 성장/기술 업종은 Quality/Blue Chip과 Growth의 경계가 있다.
-    # 여기서는 장기 추매 엔진의 보수적 기본값을 위해 대형주를 quality 쪽으로 둔다.
-    mega_cap = market_cap is not None and market_cap >= 100_000_000_000
+    # ---------------------------------------------------------
+    # 4. Speculative / Emerging
+    #
+    # 현재 실적/성장 데이터가 부족하고,
+    # 미래 사업 기대에 크게 의존하는 종목을 우선 분류한다.
+    # ---------------------------------------------------------
 
-    if high_volatility and growth_signal:
+    speculative_industries = {
+        "utilities - independent power producers",
+    }
+
+    speculative_keywords = (
+        "nuclear",
+        "small modular reactor",
+        "advanced reactor",
+        "pre-revenue",
+        "development stage",
+    )
+
+    missing_growth_data = (
+        revenue_growth is None
+        and earnings_growth is None
+    )
+
+    speculative_signal = (
+        industry in speculative_industries
+        or any(x in text for x in speculative_keywords)
+        or (
+            market_cap is not None
+            and market_cap < 20_000_000_000
+            and missing_growth_data
+            and high_volatility
+        )
+    )
+
+    if speculative_signal:
         return AssetClassification(
-            ticker, "equity", "high_volatility_growth", 0.88, "auto",
-            "높은 변동성 특성과 성장주 특성이 함께 감지됨",
+            ticker,
+            "equity",
+            "speculative",
+            0.78,
+            "auto",
+            "사업 성숙도 또는 실적 가시성이 낮아 미래 성장 기대에 대한 의존도가 높은 종목으로 판단됨",
         )
 
-    if growth_signal:
-        return AssetClassification(
-            ticker, "equity", "growth", 0.82, "auto",
-            "성장성 또는 성장 산업 특성이 감지됨",
-        )
+    # ---------------------------------------------------------
+    # 5. Quality
+    #
+    # Quality와 Growth는 겹칠 수 있지만,
+    # 여기서는 장기 보유 관점의 '사업 성숙도/규모'를 우선한다.
+    # ---------------------------------------------------------
 
     quality_sectors = {
-        "technology", "healthcare", "consumer defensive", "financial services",
-        "industrials", "communication services",
-    }
-    quality_industries = {
-        "software - infrastructure", "software - application",
-        "credit services", "insurance - diversified",
-        "medical care facilities", "packaged foods",
+        "technology",
+        "healthcare",
+        "consumer defensive",
+        "financial services",
+        "industrials",
+        "communication services",
     }
 
-    if mega_cap or sector in quality_sectors or industry in quality_industries:
+    quality_industries = {
+        "software - infrastructure",
+        "software - application",
+        "credit services",
+        "insurance - diversified",
+        "medical care facilities",
+        "packaged foods",
+    }
+
+    # 초대형주이면서 beta가 극단적으로 높지 않고
+    # 성장/사업 기반이 어느 정도 확인되는 경우 Quality 후보.
+    quality_signal = (
+        mega_cap
+        and not high_volatility
+        and (
+            growth_signal
+            or sector in quality_sectors
+            or industry in quality_industries
+        )
+    )
+
+    if quality_signal:
         return AssetClassification(
-            ticker, "equity", "quality_blue_chip", 0.72, "auto",
-            "대형주 또는 장기 보유에 적합한 우량 업종 특성이 감지됨",
+            ticker,
+            "equity",
+            "quality",
+            0.84,
+            "auto",
+            "초대형 규모와 검증된 사업 기반을 갖춘 장기 보유 우량주 특성이 감지됨",
         )
 
-    # quoteType이 EQUITY가 아니거나 메타데이터가 부족해도 스캐너가 멈추지 않도록
-    # 가장 보수적인 일반 주식 전략으로 fallback한다.
+    # ---------------------------------------------------------
+    # 6. Established Growth
+    #
+    # 규모가 충분하고 성장성이 확인되지만,
+    # Quality보다 성장성의 비중이 큰 종목.
+    # ---------------------------------------------------------
+
+    established_growth_signal = (
+        growth_signal
+        and market_cap is not None
+        and market_cap >= 50_000_000_000
+    )
+
+    if established_growth_signal:
+        confidence = 0.84
+
+        if high_volatility:
+            confidence = 0.80
+
+        return AssetClassification(
+            ticker,
+            "equity",
+            "established_growth",
+            confidence,
+            "auto",
+            "충분한 사업 규모와 성장성이 확인되어 검증된 성장주 특성이 감지됨",
+        )
+
+    # ---------------------------------------------------------
+    # 7. General Equity
+    # ---------------------------------------------------------
+
     if quote_type in ("equity", "stock", ""):
         return AssetClassification(
-            ticker, "equity", "general_equity", 0.55, "auto",
-            "명확한 ETF/성장/우량주 분류 근거가 부족함",
+            ticker,
+            "equity",
+            "general",
+            0.55,
+            "auto",
+            "명확한 Quality/Growth/Speculative 분류 근거가 부족함",
         )
 
     return AssetClassification(
-        ticker, "other", "general_equity", 0.40, "auto",
+        ticker,
+        "other",
+        "general",
+        0.40,
+        "auto",
         "지원되지 않는 자산 유형이므로 보수적으로 일반 전략 적용",
     )
