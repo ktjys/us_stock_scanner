@@ -320,5 +320,5 @@ def test_analyze_recent_data_returns_signal(monkeypatch):
                       index=idx)
     monkeypatch.setattr("stock_scanner.fetch_history", lambda t: df)
     monkeypatch.setattr("stock_scanner.compute_signal",
-                        lambda t, d: {"ticker": t, "score": 80})
+                        lambda t, d, m: {"ticker": t, "score": 80})
     assert analyze("AAPL") == {"ticker": "AAPL", "score": 80}

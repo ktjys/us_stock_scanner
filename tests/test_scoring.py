@@ -55,28 +55,31 @@ def test_rsi_seed_matches_hand_computed_wilder():
 
 
 def test_rsi_tiers_are_exclusive():
-    score, cond = score_signal(100.0, 37.0, 37.0, 110.0, 120.0, -2.0, 1.0)
-    assert score == 15
-    assert cond == ["RSI30~40"]
+    # RSI 37 → 15점 + 얕은눌림(-2%) → 4점 = 19점 (V6 배점)
+    score, cond, details = score_signal(100.0, 37.0, 37.0, 110.0, 120.0, -2.0, 1.0)
+    assert score == 19
+    assert cond == ["RSI30~40", "얕은눌림"]
+    assert details["rsi_state"] == 15
+    assert details["drawdown"] == 4
 
 
 def test_rsi_rebound_is_stronger_with_larger_delta():
-    weak, _ = score_signal(100, 31, 30, 110, 120, -2, 1)
-    strong, _ = score_signal(100, 35, 29, 110, 120, -2, 1)
+    weak, _, _ = score_signal(100, 31, 30, 110, 120, -2, 1)
+    strong, _, _ = score_signal(100, 35, 29, 110, 120, -2, 1)
     assert strong > weak
 
 
 def test_deep_crash_is_not_maximally_rewarded():
-    moderate, _ = score_signal(100, 32, 30, 110, 120, -15, 1)
-    crash, _ = score_signal(100, 32, 30, 110, 120, -35, 1)
+    moderate, _, _ = score_signal(100, 32, 30, 110, 120, -15, 1)
+    crash, _, _ = score_signal(100, 32, 30, 110, 120, -35, 1)
     assert moderate > crash
 
 
 def test_uptrend_adds_more_points_than_broken_trend():
-    healthy, _ = score_signal(
+    healthy, _, _ = score_signal(
         100, 32, 30, 100, 95, -12, 1.5, ma50_prev=94, prev_price=98
     )
-    broken, _ = score_signal(
+    broken, _, _ = score_signal(
         80, 32, 30, 90, 100, -12, 1.5, ma50_prev=101, prev_price=82
     )
     assert healthy > broken
@@ -85,13 +88,14 @@ def test_uptrend_adds_more_points_than_broken_trend():
 def test_full_combo_v6_max_score():
     # RSI15 + RSI반등20 + 가격반등20 + 적정눌림10 + MA20회복15
     # + 상승추세10 + QQQ대비5 + 반등+거래량5 = 100
-    score, cond = score_signal(
+    score, cond, details = score_signal(
         100.0, 32.0, 26.0, 99.0, 90.0, -15.0, 1.7,
         ma50_prev=89.0, prev_price=98.0, ma20_prev=101.0,
         relative_strength_5d=3.0
     )
     assert score == 100
     assert len(cond) == 8
+    assert sum(details.values()) == 100
 
 
 # ---------------------------------------------------------------------------
