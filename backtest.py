@@ -26,6 +26,21 @@ SCORE_BANDS = [(40,44),(45,49),(50,54),(55,59),(60,64),(65,69),(70,74),(75,79),(
 COOLDOWN_DAYS = 5
 
 
+def _json_safe(obj: Any) -> Any:
+    """NaN/Infinity를 None으로 치환 — 브라우저 JSON.parse는 NaN 토큰을 거부하므로
+    (pandas DataFrame의 None→NaN 변환 + json.dump 기본 allow_nan=True 조합으로
+    NaN이 파일에 새겨질 수 있다) 대시보드용 JSON에는 항상 통과시킨다."""
+    if isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 def _get_db_if_available() -> Any:
     """SUPABASE_URL/KEY env가 있으면 DB 클라이언트, 없으면 None (CSV 폴백)."""
     if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY"):
@@ -472,7 +487,7 @@ def main() -> None:
         )
         os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
+            json.dump(_json_safe(report), f, ensure_ascii=False, indent=2)
         print(f"JSON 저장 완료: {args.json}", file=sys.stderr)
 
     if args.verbose:
