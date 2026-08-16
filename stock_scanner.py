@@ -22,7 +22,8 @@ from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
 from supabase import create_client
 
 WATCHLIST_FILE = "watchlist.csv"
-ALERT_SCORE = 65  # V5 백테스트 후 조정 권장
+ALERT_SCORE = 65  # V6 provisional; 백테스트 결과 확인 후 조정
+SCORE_VERSION = 6
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
@@ -96,44 +97,45 @@ def fetch_history(ticker: str, retries: int = 3, backoff: float = 2.0) -> pd.Dat
 def score_signal(price: float, rv: float, prev: float,
                  ma20: float, ma50: float, dd: float, vr: float,
                  ma50_prev: float | None = None,
-                 prev_price: float | None = None) -> tuple[int, list[str]]:
-    """기술지표 → (0~100점, 조건목록).
+                 prev_price: float | None = None,
+                 ma20_prev: float | None = None,
+                 relative_strength_5d: float | None = None) -> tuple[int, list[str]]:
+    """V6 반등확인형 스코어 (0~100).
 
-    V5 점수는 단순히 '많이 떨어졌는가'보다
-    '과매도 + 반등 조짐 + 중기 추세 유지 + 적당한 눌림'을 높게 평가한다.
+    목표는 '많이 떨어진 종목'보다 '눌림 후 실제 반등이 시작된 종목'을
+    높은 점수로 분리하는 것이다.
 
     배점:
-      RSI 상태       20
-      RSI 반등       20
-      고점대비       15
-      MA20 눌림      15
-      중기 추세      20
-      거래량/반등    10
-      총합          100
+      RSI 상태             15
+      RSI 반등             20
+      가격 반등            20
+      적정 눌림폭          10
+      MA20 회복/접근       15
+      중기 추세             10
+      QQQ 대비 상대강도      5
+      반등+거래량            5
+      총합                 100
     """
     score, cond = 0, []
 
-    # 1) RSI 상태: 극단적 과매도보다 25~35 부근을 선호.
-    if 30 <= rv < 35:
-        score += 20
-        cond.append("RSI30~35")
+    # 1) RSI 상태: 극단적 과매도 자체를 최고점으로 보지 않는다.
+    if 30 <= rv < 40:
+        score += 15
+        cond.append("RSI30~40")
     elif 25 <= rv < 30:
-        score += 17
+        score += 12
         cond.append("RSI25~30")
-    elif 35 <= rv < 40:
-        score += 14
-        cond.append("RSI35~40")
+    elif 40 <= rv < 45:
+        score += 8
+        cond.append("RSI40~45")
     elif 20 <= rv < 25:
-        score += 10
+        score += 6
         cond.append("RSI20~25")
     elif rv < 20:
-        score += 5
+        score += 2
         cond.append("RSI<20")
-    elif 40 <= rv < 45:
-        score += 5
-        cond.append("RSI40~45")
 
-    # 2) RSI 반등: 단순 과매도보다 반등 폭을 중요하게 본다.
+    # 2) RSI 반등: 방향 전환을 강하게 평가한다.
     delta_rsi = rv - prev
     if delta_rsi >= 5:
         score += 20
@@ -142,63 +144,122 @@ def score_signal(price: float, rv: float, prev: float,
         score += 15
         cond.append("RSI반등")
     elif delta_rsi > 0:
-        score += 10
+        score += 8
         cond.append("RSI소폭반등")
 
-    # 3) 60거래일 고점 대비 눌림: 적당한 조정을 선호하고 급락은 제한.
-    if -20 <= dd <= -10:
-        score += 15
-        cond.append("고점대비-10~-20%")
-    elif -10 < dd <= -5:
+    # 3) 가격 반등: 전일 대비 실제 양봉/반등이 있어야 높은 점수를 준다.
+    day_return = ((price / prev_price) - 1) * 100 if prev_price else 0.0
+    if day_return >= 2.0:
+        score += 20
+        cond.append("가격강한반등")
+    elif day_return >= 0.5:
+        score += 14
+        cond.append("가격반등")
+    elif day_return > 0:
         score += 8
-        cond.append("고점대비-5~-10%")
-    elif -25 <= dd < -20:
+        cond.append("가격소폭반등")
+
+    # 4) 60일 고점 대비 눌림: 너무 깊은 급락은 매수점수를 주지 않는다.
+    if -15 <= dd <= -5:
+        score += 10
+        cond.append("적정눌림-5~-15%")
+    elif -25 <= dd < -15:
         score += 7
-        cond.append("고점대비-20~-25%")
+        cond.append("눌림-15~-25%")
+    elif -5 < dd <= -2:
+        score += 4
+        cond.append("얕은눌림")
     elif dd < -25:
-        score += 2
-        cond.append("고점대비-25%이상급락")
+        cond.append("과도한급락")
 
-    # 4) MA20: 20일선에서 눌림/접근한 구간을 선호.
+    # 5) MA20: 단순 근접보다 '회복'을 우선한다.
     ma20_gap = (price / ma20 - 1) * 100
-    if abs(ma20_gap) <= 2:
+    crossed_ma20 = (
+        ma20_prev is not None and prev_price is not None
+        and prev_price <= ma20_prev and price > ma20
+    )
+    if crossed_ma20:
         score += 15
-        cond.append("20일선근접")
-    elif abs(ma20_gap) <= 5:
+        cond.append("MA20회복")
+    elif price >= ma20 and ma20_gap <= 3:
         score += 10
-        cond.append("20일선5%이내")
-    elif abs(ma20_gap) <= 8:
-        score += 5
-        cond.append("20일선8%이내")
-
-    # 5) 중기 추세: 가격이 MA50 위이고 MA50 자체도 상승하는 종목을 선호.
-    if price > ma50:
+        cond.append("MA20위근접")
+    elif -3 <= ma20_gap < 0:
         score += 8
-        cond.append("50일선위")
-    if ma50_prev is not None and ma50 > ma50_prev:
-        score += 7
-        cond.append("50일선상승")
-    if price > ma20 > ma50:
-        score += 5
-        cond.append("MA20>MA50")
+        cond.append("MA20아래근접")
+    elif abs(ma20_gap) <= 5:
+        score += 4
+        cond.append("MA205%이내")
 
-    # 6) 거래량: 무조건 거래량 폭증보다 가격 반등과 동반된 경우를 선호.
-    price_up = prev_price is None or price > prev_price
-    if vr >= 1.5 and price_up:
+    # 6) 중기 추세.
+    ma50_rising = ma50_prev is not None and ma50 > ma50_prev
+    if price > ma50 and ma50_rising:
         score += 10
+        cond.append("상승추세")
+    elif price > ma50:
+        score += 6
+        cond.append("50일선위")
+
+    # 7) QQQ 대비 5거래일 상대강도.
+    if relative_strength_5d is not None:
+        if relative_strength_5d >= 2:
+            score += 5
+            cond.append("QQQ대비강함")
+        elif relative_strength_5d > 0:
+            score += 3
+            cond.append("QQQ대비우위")
+
+    # 8) 반등과 거래량이 같이 나타나는 경우만 강하게 가점.
+    if vr >= 1.5 and day_return > 0:
+        score += 5
         cond.append("반등+거래량1.5배")
-    elif vr >= 1.2 and price_up:
-        score += 7
-        cond.append("반등+거래량증가")
-    elif vr >= 1.2:
+    elif vr >= 1.2 and day_return > 0:
         score += 3
-        cond.append("거래량증가")
+        cond.append("반등+거래량증가")
 
     return min(score, 100), cond
 
 
-def compute_signal(ticker: str, df: pd.DataFrame) -> dict[str, Any] | None:
-    """가격 데이터프레임에서 V5 신호를 계산한다 (순수 함수)."""
+_market_df_cache: pd.DataFrame | None = None
+
+
+def _market_history() -> pd.DataFrame:
+    """V6 상대강도 계산용 QQQ 일봉. 프로세스 내 1회 캐시."""
+    global _market_df_cache
+    if _market_df_cache is None or _market_df_cache.empty:
+        _market_df_cache = fetch_history("QQQ")
+    return _market_df_cache.copy()
+
+
+def _relative_strength_series(df: pd.DataFrame, market_df: pd.DataFrame | None) -> pd.Series:
+    """날짜별 5일 상대강도(종목 5일 수익률 - QQQ 5일 수익률, %p)."""
+    out = pd.Series(float("nan"), index=df.index)
+    if market_df is None or market_df.empty:
+        return out
+    try:
+        stock = df["Close"].astype(float)
+        market = market_df["Close"].astype(float)
+        market = market[~market.index.duplicated(keep="last")].sort_index()
+        stock_ret = stock.pct_change(5) * 100
+        market_ret = market.pct_change(5) * 100
+        market_ret = market_ret.reindex(df.index, method="ffill")
+        out = stock_ret - market_ret
+        return out
+    except Exception:
+        return out
+
+
+def _relative_strength_5d(df: pd.DataFrame, market_df: pd.DataFrame) -> float | None:
+    """같은 날짜 기준 종목 5일 수익률 - QQQ 5일 수익률(%p)."""
+    s = _relative_strength_series(df, market_df)
+    if s.empty or pd.isna(s.iloc[-1]):
+        return None
+    return float(s.iloc[-1])
+
+
+def compute_signal(ticker: str, df: pd.DataFrame,
+                   market_df: pd.DataFrame | None = None) -> dict[str, Any] | None:
+    """가격 데이터프레임에서 V6 신호를 계산한다 (순수 함수)."""
     if df.empty:
         return None
 
@@ -219,25 +280,27 @@ def compute_signal(ticker: str, df: pd.DataFrame) -> dict[str, Any] | None:
     ma20 = float(a["ma20"])
     ma50 = float(a["ma50"])
     ma50_prev = float(b["ma50"])
+    ma20_prev = float(b["ma20"])
     dd = (price / float(a["high60"]) - 1) * 100
     vr = float(a["Volume"]) / float(a["avgvol"])
     prev_price = float(b["Close"])
+    rs5 = _relative_strength_5d(df, market_df) if market_df is not None else None
 
     score, cond = score_signal(
         price, rv, prev, ma20, ma50, dd, vr,
-        ma50_prev=ma50_prev, prev_price=prev_price
+        ma50_prev=ma50_prev, prev_price=prev_price,
+        ma20_prev=ma20_prev, relative_strength_5d=rs5
     )
     return dict(ticker=ticker, price=price, rsi=rv, prev_rsi=prev,
                 ma20=ma20, ma50=ma50, drawdown=dd,
-                volume_ratio=vr, score=score, conditions=cond,
+                volume_ratio=vr, relative_strength_5d=rs5,
+                score=score, conditions=cond,
+                score_version=SCORE_VERSION,
                 data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
 
 
 def analyze(ticker: str, date: str | None = None) -> dict[str, Any] | None:
-    """ticker의 데이터를 받아 compute_signal()로 신호를 계산한다.
-
-    최근 데이터가 STALE_DATA_DAYS일보다 오래됐으면 스킵한다.
-    """
+    """ticker의 데이터를 받아 V6 compute_signal()로 신호를 계산한다."""
     df = fetch_history(ticker)
     if df.empty:
         return None
@@ -249,7 +312,9 @@ def analyze(ticker: str, date: str | None = None) -> dict[str, Any] | None:
         if age > STALE_DATA_DAYS:
             print(f"{ticker}: 최근 데이터가 {age}일 전 ({last.date()}) - 스킵")
             return None
-    return compute_signal(ticker, df)
+    return compute_signal(ticker, df, _market_history())
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +328,8 @@ def save_daily(x: dict[str, Any], date: str) -> None:
         "rsi": x["rsi"], "prev_rsi": x["prev_rsi"],
         "ma20": x["ma20"], "ma50": x["ma50"],
         "drawdown": x["drawdown"], "volume_ratio": x["volume_ratio"],
-        "score": x["score"], "score_version": 5,
+        "relative_strength_5d": x.get("relative_strength_5d"),
+        "score": x["score"], "score_version": SCORE_VERSION,
     }).execute()
 
 
@@ -272,7 +338,7 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         return
     get_db().table("signals").upsert({
         "signal_date": date, "ticker": x["ticker"],
-        "signal_price": x["price"], "score": x["score"], "score_version": 5,
+        "signal_price": x["price"], "score": x["score"], "score_version": SCORE_VERSION,
         "rsi": x["rsi"], "drawdown": x["drawdown"],
     }, on_conflict="signal_date,ticker").execute()
 

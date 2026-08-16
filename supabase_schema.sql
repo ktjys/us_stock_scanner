@@ -10,6 +10,7 @@ create table if not exists daily_data (
   volume_ratio double precision,
   score integer,
   score_version integer not null default 1,
+  relative_strength_5d double precision,
   primary key (date, ticker)
 );
 

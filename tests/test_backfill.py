@@ -9,7 +9,7 @@ from backfill_daily import _backfill_ticker, _promote_signals
 from stock_scanner import compute_signal
 
 SCHEMA_KEYS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
-               "drawdown", "volume_ratio", "score", "score_version")
+               "drawdown", "volume_ratio", "relative_strength_5d", "score", "score_version")
 
 
 def _make_df(n=100, seed=42):
@@ -127,10 +127,14 @@ def test_promote_signals_only_high_score_rows():
     signals = _promote_signals(records, 65)
     assert signals
     assert all(s["score"] >= 65 for s in signals)
-    high = {r["date"] for r in records if r["score"] >= 65}
-    assert {s["signal_date"] for s in signals} == high
-    # 최대 90점을 넘는 임계값이면 신호가 없다
-    assert _promote_signals(records, 91) == []
+    high = [r for r in records if r["score"] >= 65]
+    selected_dates = {s["signal_date"] for s in signals}
+    assert selected_dates
+    assert selected_dates <= {r["date"] for r in high}
+    # 동일 종목 5일 cooldown 내에서는 중복 신호가 없다
+    selected = sorted(pd.Timestamp(d) for d in selected_dates)
+    assert all((selected[i] - selected[i-1]).days > 5 for i in range(1, len(selected)))
+    assert _promote_signals(records, 101) == []
 
 
 def test_promote_signals_returns_match_manual_calc():

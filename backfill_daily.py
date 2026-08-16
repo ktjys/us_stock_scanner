@@ -16,15 +16,17 @@ from typing import Any
 import pandas as pd
 
 from backtest import _compute_indicators, _get_db_if_available, _load_tickers
-from stock_scanner import ALERT_SCORE, fetch_history, score_signal
+from stock_scanner import (ALERT_SCORE, ALERT_COOLDOWN_DAYS, SCORE_VERSION,
+                           fetch_history, score_signal, _relative_strength_series)
 
 UPSERT_BATCH = 500
 # (신호일 이후 거래일 수, signals 컬럼명)
 SIGNAL_RETURN_KEYS = ((5, "return_5d"), (10, "return_10d"), (20, "return_20d"))
 
 
-def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str) -> list[dict]:
-    """한 ticker를 행 단위로 순회해 daily_data 스키마 dict 목록을 만든다."""
+def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
+                     market_df: pd.DataFrame | None = None) -> list[dict]:
+    """한 ticker의 각 과거 거래일을 V6 방식으로 스코어링한다."""
     df = _compute_indicators(df)
     if df.empty:
         return []
@@ -33,16 +35,13 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str) -> lis
     if idx.tz is not None:
         idx = idx.tz_localize(None)
     mask = (idx >= pd.Timestamp(start)) & (idx <= pd.Timestamp(end))
+    rs_series = _relative_strength_series(df, market_df)
 
     records: list[dict] = []
     close = df["Close"].astype(float)
     for i in range(len(df)):
-        if not mask[i]:
+        if not mask[i] or i == 0:
             continue
-        if i == 0:
-            continue
-        # 실전 compute_signal의 dropna()와 동일 조건: 5개 지표 + 직전 RSI가
-        # 모두 유효해야 스코어링한다 (어느 하나라도 NaN이면 스킵).
         if (pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma20"].iloc[i])
                 or pd.isna(df["ma50"].iloc[i]) or pd.isna(df["high60"].iloc[i])
                 or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])):
@@ -52,53 +51,66 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str) -> lis
         prev = float(df["rsi"].iloc[i - 1])
         ma20 = float(df["ma20"].iloc[i])
         ma50 = float(df["ma50"].iloc[i])
+        ma50_prev = float(df["ma50"].iloc[i - 1])
+        ma20_prev = float(df["ma20"].iloc[i - 1])
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
         vr = float(df["Volume"].iloc[i]) / float(df["avgvol"].iloc[i])
-
-        ma50_prev = float(df["ma50"].iloc[i - 1])
         prev_price = float(close.iloc[i - 1])
+        rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
+
         score, _ = score_signal(
             price, rv, prev, ma20, ma50, dd, vr,
             ma50_prev=ma50_prev, prev_price=prev_price,
+            ma20_prev=ma20_prev, relative_strength_5d=rs5,
         )
         records.append({
             "date": str(df.index[i])[:10], "ticker": ticker, "price": price,
             "rsi": rv, "prev_rsi": prev, "ma20": ma20, "ma50": ma50,
-            "drawdown": dd, "volume_ratio": vr, "score": score,
-            "score_version": 5,
+            "drawdown": dd, "volume_ratio": vr,
+            "relative_strength_5d": rs5,
+            "score": score, "score_version": SCORE_VERSION,
         })
     return records
 
 
 def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
-    """백필 records 중 score >= threshold인 행을 signals 스키마 dict로 승격한다.
-
-    수익률은 신호일 이후 거래일 종가 기준으로 계산한다 (update_returns와 동일
-    규칙: 이후 n번째 행이 없으면 None). 각 ticker의 records는 날짜 오름차순이다.
-    """
+    """V6 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다."""
     by_ticker: dict[str, list[dict]] = {}
     for r in records:
-        by_ticker.setdefault(r["ticker"], []).append(r)
+        if r["score"] >= threshold:
+            by_ticker.setdefault(r["ticker"], []).append(r)
 
     signals: list[dict] = []
     for rows in by_ticker.values():
-        for r in rows:
-            if r["score"] < threshold:
-                continue
+        rows = sorted(rows, key=lambda r: r["date"])
+        selected: list[dict] = []
+        i = 0
+        while i < len(rows):
+            anchor = rows[i]
+            anchor_date = pd.Timestamp(anchor["date"])
+            group = [anchor]
+            j = i + 1
+            while j < len(rows) and (pd.Timestamp(rows[j]["date"]) - anchor_date).days <= ALERT_COOLDOWN_DAYS:
+                group.append(rows[j])
+                j += 1
+            selected.append(max(group, key=lambda r: (r["score"], r["date"])))
+            i = j
+
+        for r in selected:
             after = [x for x in rows if x["date"] > r["date"]]
             rets: dict[str, float | None] = {}
             for n, key in SIGNAL_RETURN_KEYS:
-                if len(after) >= n and r["price"]:
-                    rets[key] = (after[n - 1]["price"] / r["price"] - 1) * 100
-                else:
-                    rets[key] = None
+                rets[key] = (
+                    (after[n - 1]["price"] / r["price"] - 1) * 100
+                    if len(after) >= n and r["price"] else None
+                )
             signals.append({
                 "signal_date": r["date"], "ticker": r["ticker"],
                 "signal_price": r["price"], "score": r["score"],
                 "rsi": r["rsi"], "drawdown": r["drawdown"],
-                "score_version": 5, **rets,
+                "score_version": SCORE_VERSION, **rets,
             })
-    return signals
+    return sorted(signals, key=lambda x: (x["signal_date"], x["ticker"]), reverse=True)
 
 
 def _run_backfill(weeks: int, tickers: list[str]) -> dict:
@@ -108,6 +120,11 @@ def _run_backfill(weeks: int, tickers: list[str]) -> dict:
     records/tickers가 빈 dict를 반환한다.
     """
     dfs: dict[str, pd.DataFrame] = {}
+    try:
+        market_df = fetch_history("QQQ")
+    except Exception as e:
+        market_df = pd.DataFrame()
+        print(f"경고: QQQ 상대강도 데이터 조회 실패 - {e}", file=sys.stderr)
     for ticker in tickers:
         try:
             df = fetch_history(ticker)
@@ -129,7 +146,7 @@ def _run_backfill(weeks: int, tickers: list[str]) -> dict:
 
     records: list[dict] = []
     for ticker, df in dfs.items():
-        records.extend(_backfill_ticker(ticker, df, start_str, end_str))
+        records.extend(_backfill_ticker(ticker, df, start_str, end_str, market_df))
 
     return {"records": records, "tickers": list(dfs),
             "start": start_str, "end": end_str, "weeks": weeks}

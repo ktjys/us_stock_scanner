@@ -11,7 +11,7 @@
   "use strict";
 
 var SCORE_THRESHOLD = 65; // stock_scanner.ALERT_SCORE 와 동일
-var NEAR_THRESHOLD = 55;  // V5 근접 후보 임계점 (55~64점)
+var NEAR_THRESHOLD = 60;  // V6 근접 후보 임계점 (60~64점)
 var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
   // ---- 설정 로드 (config.js 가 window.DASHBOARD_CONFIG 로 노출) ----
@@ -29,8 +29,11 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
   // ---- 공유 상태 ----
   var nameMap = {};      // ticker -> name (전체 watchlist)
   var activeTickers = []; // 활성 watchlist ticker 목록
-  var charts = { detail: null };
+  var charts = { detail: [] };
   var currentScreen = "status";
+  var detailView = "default";
+  var detailCustom = { price: true, volume: true, rsi: true, score: true };
+  var detailRows = [];
 
   // ---- 포맷터 ----
   function fmtPrice(v) {
@@ -229,9 +232,10 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
   }
 
   function destroyCharts() {
-    Object.keys(charts).forEach(function (k) {
-      if (charts[k]) { charts[k].destroy(); charts[k] = null; }
-    });
+    if (charts.detail && Array.isArray(charts.detail)) {
+      charts.detail.forEach(function (c) { if (c) c.destroy(); });
+    }
+    charts.detail = [];
   }
 
   // =====================================================================
@@ -245,6 +249,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         var dRes = await sb
           .from("daily_data")
           .select("date")
+          .eq("score_version", 6)
           .order("date", { ascending: false })
           .limit(1);
         if (dRes.error) throw dRes.error;
@@ -252,7 +257,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
 
         var rows = [];
         if (latest) {
-          var rRes = await sb.from("daily_data").select("*").eq("date", latest);
+          var rRes = await sb.from("daily_data").select("*").eq("date", latest).eq("score_version", 6);
           if (rRes.error) throw rRes.error;
           rows = rRes.data || [];
         }
@@ -392,6 +397,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         var res = await sb
           .from("daily_data")
           .select("date")
+          .eq("score_version", 6)
           .order("date", { ascending: false })
           .limit(1000);
         if (res.error) throw res.error;
@@ -425,7 +431,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     await runLoad(
       "daily_data(" + date + ")",
       async function () {
-        var res = await sb.from("daily_data").select("*").eq("date", date);
+        var res = await sb.from("daily_data").select("*").eq("date", date).eq("score_version", 6);
         if (res.error) throw res.error;
         sbData = res.data || [];
         renderScoreboard();
@@ -522,7 +528,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       "daily_data(히트맵)",
       async function () {
         var rows = await fetchAllPaged(
-          sb.from("daily_data").select("*").order("date", { ascending: false }).order("ticker", { ascending: true })
+          sb.from("daily_data").select("*").eq("score_version", 6).order("date", { ascending: false }).order("ticker", { ascending: true })
         );
         // 최근 10개 날짜 (중복 제거, date desc 상태)
         var seen = {};
@@ -613,13 +619,30 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         loadDetail();
       });
     });
+
+    $("detail-view-buttons").querySelectorAll("button").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        detailView = btn.getAttribute("data-view");
+        $("detail-view-buttons").querySelectorAll("button").forEach(function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+        $("detail-custom-controls").classList.toggle("hidden", detailView !== "custom");
+        if (detailRows.length) renderDetailCharts(detailRows);
+      });
+    });
+
+    $("detail-custom-controls").querySelectorAll("input[type=checkbox]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        detailCustom[input.getAttribute("data-indicator")] = input.checked;
+        if (detailRows.length) renderDetailCharts(detailRows);
+      });
+    });
   }
 
   async function loadDetail() {
     await runLoad(
       "daily_data(시계열)",
       async function () {
-        // 종목 드롭다운 (활성 순)
         var sel = $("detail-ticker");
         if (!sel.options.length) {
           activeTickers.forEach(function (tk) {
@@ -634,18 +657,19 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
           return;
         }
 
-        // 시계열 전체 조회 (페이지네이션) 후 오름차순 정렬
         var rows = await fetchAllPaged(
-          sb.from("daily_data").select("*").eq("ticker", ticker).order("date", { ascending: true })
+          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 6).order("date", { ascending: true })
         );
         var cutoff = dateMinusDays(detailPeriod * 30);
         rows = rows.filter(function (r) { return r.date >= cutoff; });
 
         if (!rows.length) {
           destroyCharts();
+          detailRows = [];
           $("detail-content").classList.remove("hidden");
           return;
         }
+        detailRows = rows;
         renderDetailCharts(rows);
         $("detail-content").classList.remove("hidden");
       },
@@ -654,54 +678,66 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
     );
   }
 
-  function baseLineOpts() {
-    return {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { legend: { labels: { boxWidth: 12 } } },
-      scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true } } },
-    };
-  }
-
-  // 통합 상세 차트: 가격/이평 + 점수 + RSI + 거래량을 하나의 시간축으로 표시한다.
-  // Chart.js의 기본 tooltip(index 모드)를 이용해 같은 날짜의 모든 값을 동시에 보여주고,
-  // custom plugin으로 선택 날짜의 세로선을 그린다.
-  var detailCrosshairPlugin = {
-    id: "detailCrosshair",
-    afterDraw: function (chart) {
-      var active = chart.getActiveElements();
-      if (!active || !active.length) return;
-      var x = active[0].element.x;
-      var area = chart.chartArea;
-      var ctx = chart.ctx;
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(x, area.top);
-      ctx.lineTo(x, area.bottom);
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = "rgba(80,90,110,.65)";
-      ctx.stroke();
-      ctx.restore();
-    }
+  var DETAIL_COLORS = {
+    price: "#5b8def",
+    ma20: "#f5a623",
+    ma50: "#b67cff",
+    volume: "#6fd08c",
+    rsi: "#ff6b8a",
+    score: "#4dd0e1",
+    ref: "rgba(152,162,179,.45)"
   };
 
   function fmtMoney(v) {
     if (v == null || !isFinite(Number(v))) return "-";
     return "$" + Number(v).toFixed(2);
   }
-  function fmtNum(v, digits) {
-    if (v == null || !isFinite(Number(v))) return "-";
-    return Number(v).toFixed(digits == null ? 1 : digits);
+
+  function detailPanelSpecs() {
+    if (detailView === "price_score") return ["price", "score"];
+    if (detailView === "price_rsi") return ["price", "rsi"];
+    if (detailView === "price_volume") return ["price", "volume"];
+    if (detailView === "all") return ["price", "volume", "rsi", "score"];
+
+    if (detailView === "custom") {
+      var out = [];
+      if (detailCustom.price) out.push("price");
+      if (detailCustom.volume) out.push("volume");
+      if (detailCustom.rsi) out.push("rsi");
+      if (detailCustom.score) out.push("score");
+      return out.length ? out : ["price"];
+    }
+    return ["price", "volume", "rsi", "score"];
   }
 
-  function updateDetailSelection(chart, rows) {
-    var active = chart.getActiveElements();
-    if (!active || !active.length) return;
-    var idx = active[0].index;
-    var r = rows[idx];
-    if (!r) return;
+  function detailCrosshairPlugin() {
+    return {
+      id: "detailCrosshair",
+      afterDraw: function (chart) {
+        var idx = chart.$detailSelectedIndex;
+        if (idx == null) return;
+        var meta = chart.getDatasetMeta(0);
+        var point = meta && meta.data ? meta.data[idx] : null;
+        if (!point) return;
+        var x = point.x;
+        var area = chart.chartArea;
+        var ctx = chart.ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, area.top);
+        ctx.lineTo(x, area.bottom);
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = "rgba(220,225,235,.72)";
+        ctx.stroke();
+        ctx.restore();
+      }
+    };
+  }
+
+  function updateDetailSelection(index) {
+    if (index == null || !detailRows[index]) return;
+    var r = detailRows[index];
     $("detail-selected-date").textContent = r.date;
     $("detail-tooltip-summary").innerHTML =
       '<div><b>가격</b><strong>' + fmtMoney(r.price) + '</strong></div>' +
@@ -709,85 +745,127 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       '<div><b>MA50</b><strong>' + fmtMoney(r.ma50) + '</strong></div>' +
       '<div><b>점수</b><strong>' + fmtNum(r.score, 0) + '</strong></div>' +
       '<div><b>RSI</b><strong>' + fmtNum(r.rsi, 1) + '</strong></div>' +
-      '<div><b>거래량</b><strong>' + fmtNum(r.volume_ratio, 2) + 'x</strong></div>';
+      '<div><b>거래량</b><strong>' + fmtNum(r.volume_ratio, 2) + 'x</strong></div>' +
+      '<div><b>QQQ 대비 5일</b><strong>' + fmtPct(r.relative_strength_5d) + '</strong></div>';
+
+    (charts.detail || []).forEach(function (chart) {
+      chart.$detailSelectedIndex = index;
+      var active = [{ datasetIndex: 0, index: index }];
+      chart.setActiveElements(active);
+      var y = chart.scales.y ? chart.scales.y.getPixelForValue(chart.data.datasets[0].data[index]) : chart.chartArea.top;
+      chart.tooltip.setActiveElements(active, { x: chart.scales.x.getPixelForValue(index), y: y });
+      chart.update("none");
+    });
+  }
+
+  function detailDataset(panel, rows) {
+    var labels = rows.map(function (r) { return r.date; });
+    if (panel === "price") {
+      return {
+        title: "가격 · 이동평균",
+        datasets: [
+          { label: "가격", data: rows.map(function(r){return r.price;}), borderColor: DETAIL_COLORS.price, yAxisID:"y", borderWidth:2.4, pointRadius:0, tension:.12, spanGaps:true },
+          { label: "MA20", data: rows.map(function(r){return r.ma20;}), borderColor: DETAIL_COLORS.ma20, yAxisID:"y", borderWidth:1.6, pointRadius:0, tension:.12, spanGaps:true },
+          { label: "MA50", data: rows.map(function(r){return r.ma50;}), borderColor: DETAIL_COLORS.ma50, yAxisID:"y", borderWidth:1.6, pointRadius:0, tension:.12, spanGaps:true }
+        ],
+        scales: { y: { position:"left", title:{display:true,text:"가격"} } }
+      };
+    }
+    if (panel === "rsi") {
+      var ref35 = labels.map(function(){return 35;});
+      var ref40 = labels.map(function(){return 40;});
+      return {
+        title: "RSI",
+        datasets: [
+          { label:"RSI", data:rows.map(function(r){return r.rsi;}), borderColor:DETAIL_COLORS.rsi, yAxisID:"y", borderWidth:2, pointRadius:0, tension:.12, spanGaps:true },
+          { label:"RSI 35", data:ref35, borderColor:DETAIL_COLORS.ref, yAxisID:"y", borderWidth:1, borderDash:[5,4], pointRadius:0 },
+          { label:"RSI 40", data:ref40, borderColor:DETAIL_COLORS.ref, yAxisID:"y", borderWidth:1, borderDash:[5,4], pointRadius:0 }
+        ],
+        scales: { y:{min:0,max:100,position:"left",title:{display:true,text:"RSI"}} }
+      };
+    }
+    if (panel === "score") {
+      return {
+        title: "V6 점수",
+        datasets: [
+          { label:"점수", data:rows.map(function(r){return r.score;}), borderColor:DETAIL_COLORS.score, yAxisID:"y", borderWidth:2, pointRadius:0, tension:.12, spanGaps:true }
+        ],
+        scales: { y:{min:0,max:100,position:"left",title:{display:true,text:"점수"}} }
+      };
+    }
+    return {
+      title: "거래량",
+      datasets: [
+        { label:"거래량 / 20일평균", data:rows.map(function(r){return r.volume_ratio;}), borderColor:DETAIL_COLORS.volume, backgroundColor:"rgba(111,208,140,.12)", yAxisID:"y", borderWidth:1.8, pointRadius:0, tension:.08, fill:true, spanGaps:true }
+      ],
+      scales: { y:{min:0,position:"left",title:{display:true,text:"배수"}} }
+    };
   }
 
   function renderDetailCharts(rows) {
     destroyCharts();
-    var canvas = $("chart-detail");
+    var host = $("detail-chart-panels");
+    host.innerHTML = "";
     var labels = rows.map(function (r) { return r.date; });
-    var volume = rows.map(function (r) { return r.volume_ratio; });
-    var ref35 = labels.map(function () { return 35; });
-    var ref40 = labels.map(function () { return 40; });
+    var panels = detailPanelSpecs();
 
-    charts.detail = new Chart(canvas, {
-      type: "line",
-      plugins: [detailCrosshairPlugin],
-      data: {
-        labels: labels,
-        datasets: [
-          { label: "가격", data: rows.map(function (r) { return r.price; }), yAxisID: "yPrice", borderWidth: 2.4, pointRadius: 0, tension: .12, spanGaps: true },
-          { label: "MA20", data: rows.map(function (r) { return r.ma20; }), yAxisID: "yPrice", borderWidth: 1.5, pointRadius: 0, tension: .12, spanGaps: true },
-          { label: "MA50", data: rows.map(function (r) { return r.ma50; }), yAxisID: "yPrice", borderWidth: 1.5, pointRadius: 0, tension: .12, spanGaps: true },
-          { label: "점수", data: rows.map(function (r) { return r.score; }), yAxisID: "yScore", borderWidth: 1.7, pointRadius: 0, tension: .12, spanGaps: true, borderDash: [6,3] },
-          { label: "RSI", data: rows.map(function (r) { return r.rsi; }), yAxisID: "yRsi", borderWidth: 1.8, pointRadius: 0, tension: .12, spanGaps: true },
-          { label: "RSI 35", data: ref35, yAxisID: "yRsi", borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
-          { label: "RSI 40", data: ref40, yAxisID: "yRsi", borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
-          { label: "거래량 x20D", data: volume, yAxisID: "yVolume", type: "line", borderWidth: 1, pointRadius: 0, tension: .08, fill: true, spanGaps: true },
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        onHover: function (event, active) {
-          if (active && active.length) updateDetailSelection(charts.detail, rows);
-        },
-        onClick: function (event, active) {
-          if (active && active.length) {
-            charts.detail.setActiveElements(active);
-            charts.detail.tooltip.setActiveElements(active, {x: active[0].element.x, y: active[0].element.y});
-            updateDetailSelection(charts.detail, rows);
-            charts.detail.update();
-          }
-        },
-        plugins: {
-          legend: { display: true, position: "top", labels: { boxWidth: 10, padding: 8, font: { size: 10 } } },
-          tooltip: {
-            mode: "index", intersect: false,
-            callbacks: {
-              title: function (items) { return items.length ? items[0].label : ""; },
-              label: function (ctx) {
-                var v = ctx.parsed.y;
-                if (v == null) return null;
-                if (ctx.dataset.yAxisID === "yPrice") return ctx.dataset.label + ": " + fmtMoney(v);
-                if (ctx.dataset.yAxisID === "yVolume") return ctx.dataset.label + ": " + fmtNum(v, 2) + "x";
-                return ctx.dataset.label + ": " + fmtNum(v, ctx.dataset.label === "점수" ? 0 : 1);
+    panels.forEach(function(panel, panelIndex) {
+      var box = document.createElement("div");
+      box.className = "detail-panel";
+      var head = document.createElement("div");
+      head.className = "detail-panel-title";
+      var spec = detailDataset(panel, rows);
+      head.textContent = spec.title;
+      box.appendChild(head);
+      var wrap = document.createElement("div");
+      wrap.className = "detail-panel-canvas";
+      var canvas = document.createElement("canvas");
+      wrap.appendChild(canvas);
+      box.appendChild(wrap);
+      host.appendChild(box);
+
+      var chart = new Chart(canvas, {
+        type: "line",
+        plugins: [detailCrosshairPlugin()],
+        data: { labels: labels, datasets: spec.datasets },
+        options: {
+          responsive:true,
+          maintainAspectRatio:false,
+          interaction:{mode:"index",intersect:false},
+          onHover:function(event, active) {
+            if (active && active.length) updateDetailSelection(active[0].index);
+          },
+          onClick:function(event, active) {
+            if (active && active.length) updateDetailSelection(active[0].index);
+          },
+          plugins:{
+            legend:{display:true,position:"top",labels:{boxWidth:10,padding:8,font:{size:10}}},
+            tooltip:{
+              mode:"index",intersect:false,
+              callbacks:{
+                title:function(items){return items.length ? items[0].label : "";},
+                label:function(ctx){
+                  var v=ctx.parsed.y;
+                  if(v==null)return null;
+                  if(panel==="price") return ctx.dataset.label+": "+fmtMoney(v);
+                  if(panel==="volume") return ctx.dataset.label+": "+fmtNum(v,2)+"x";
+                  return ctx.dataset.label+": "+fmtNum(v,1);
+                }
               }
             }
+          },
+          scales:{
+            x:{ticks:{maxTicksLimit:9,autoSkip:true,maxRotation:0}},
+            y:{beginAtZero:panel!=="price", ...(spec.scales.y||{})}
           }
-        },
-        scales: {
-          x: { ticks: { maxTicksLimit: 9, autoSkip: true, maxRotation: 0 } },
-          yPrice: { position: "left", title: { display: true, text: "가격" }, grid: { drawOnChartArea: true } },
-          yScore: { position: "right", min: 0, max: 100, title: { display: true, text: "점수" }, grid: { drawOnChartArea: false } },
-          yRsi: { position: "right", min: 0, max: 100, offset: true, title: { display: true, text: "RSI" }, grid: { drawOnChartArea: false } },
-          yVolume: { display: false, min: 0, suggestedMax: 3 },
         }
-      }
+      });
+      charts.detail.push(chart);
     });
 
-    // 모바일에서는 마지막 날짜를 기본 선택해 요약 정보를 바로 보여준다.
     var last = labels.length - 1;
-    if (last >= 0) {
-      var active = [{ datasetIndex: 0, index: last }];
-      charts.detail.setActiveElements(active);
-      charts.detail.tooltip.setActiveElements(active, {x: charts.detail.scales.x.getPixelForValue(last), y: charts.detail.scales.yPrice.getPixelForValue(rows[last].price)});
-      updateDetailSelection(charts.detail, rows);
-      charts.detail.update();
-    }
+    if (last >= 0) updateDetailSelection(last);
   }
-
   // =====================================================================
   // 화면 4: 신호·성과
   // =====================================================================
@@ -808,7 +886,7 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       "signals",
       async function () {
         var weeks = parseInt($("signals-period").value, 10);
-        var rows = await fetchAllPaged(sb.from("signals").select("*").order("signal_date", { ascending: false }));
+        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 6).order("signal_date", { ascending: false }));
 
         // 기간 필터: 오늘(UTC) - N주, signal_date >= cutoff (문자열 비교)
         if (weeks > 0) {
@@ -902,7 +980,8 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       })
       .then(function (data) {
         loadingEl.classList.add("hidden");
-        if (!data || !data.thresholds || !data.thresholds.length) {
+        if (!data || data.version !== "v6" || !data.bands || !data.bands.length) {
+          emptyEl.textContent = "V6 백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
           emptyEl.classList.remove("hidden");
           return;
         }
@@ -927,19 +1006,25 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
       parts.push("기간: " + data.period_start + " ~ " + data.period_end);
     }
     if (data.ticker_count != null) parts.push("종목 수: " + data.ticker_count);
-    parts.push("주 1회 자동 갱신");
+    if (data.cooldown_days != null) parts.push("중복 신호 cooldown: " + data.cooldown_days + "일");
+    if (data.raw_signal_count != null && data.cooldown_signal_count != null) {
+      parts.push("원신호 " + data.raw_signal_count + " → 채택 " + data.cooldown_signal_count);
+    }
     info.innerHTML = parts.map(function (p) { return "<span>" + p + "</span>"; }).join("");
 
-    renderBacktestChart(data.thresholds);
-    renderBacktestThresholdTable(data.thresholds);
+    var bands = data.bands || [];
+    renderBacktestChart(bands);
+    renderBacktestThresholdTable(bands);
     renderBacktestRecentTable(data.recent_signals || []);
   }
 
-  function renderBacktestChart(thresholds) {
+  function renderBacktestChart(bands) {
     if (backtestChart) { backtestChart.destroy(); backtestChart = null; }
-    var labels = thresholds.map(function (t) { return t.threshold + "점"; });
-    var signalData = thresholds.map(function (t) { return t.signals; });
-    var winData = thresholds.map(function (t) { return t.win_rate == null ? null : t.win_rate; });
+    var labels = bands.map(function (b) { return b.band + "점"; });
+    var signalData = bands.map(function (b) { return b.signals; });
+    var winData = bands.map(function (b) { return b.win_rate == null ? null : b.win_rate; });
+    var avg20 = bands.map(function (b) { return b.avg_20d == null ? null : b.avg_20d; });
+
     backtestChart = new Chart($("chart-backtest"), {
       data: {
         labels: labels,
@@ -948,13 +1033,13 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
             type: "bar",
             label: "신호수",
             data: signalData,
-            backgroundColor: "rgba(91,141,239,0.6)",
+            backgroundColor: "rgba(91,141,239,0.55)",
             yAxisID: "y",
-            order: 2,
+            order: 3,
           },
           {
             type: "line",
-            label: "승률(%)",
+            label: "5일 승률(%)",
             data: winData,
             borderColor: "#f5a623",
             backgroundColor: "#f5a623",
@@ -964,31 +1049,49 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
             yAxisID: "y1",
             order: 1,
           },
+          {
+            type: "line",
+            label: "20일 평균수익률(%)",
+            data: avg20,
+            borderColor: "#4dd0e1",
+            backgroundColor: "#4dd0e1",
+            borderWidth: 2,
+            pointRadius: 3,
+            tension: 0.1,
+            yAxisID: "y2",
+            order: 2,
+          },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
-        plugins: { legend: { labels: { boxWidth: 12 } } },
+        plugins: {
+          legend: { labels: { boxWidth: 12 } },
+          tooltip: { mode: "index", intersect: false }
+        },
         scales: {
-          x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
+          x: { ticks: { maxTicksLimit: 10, autoSkip: true } },
           y: { position: "left", beginAtZero: true, title: { display: true, text: "신호수" } },
           y1: {
-            position: "right",
-            beginAtZero: true,
+            position: "right", beginAtZero: true, min: 0, max: 100,
             grid: { drawOnChartArea: false },
             title: { display: true, text: "승률(%)" },
           },
+          y2: {
+            display: false, position: "right",
+            grid: { drawOnChartArea: false }
+          }
         },
       },
     });
   }
 
-  function renderBacktestThresholdTable(thresholds) {
+  function renderBacktestThresholdTable(bands) {
     var body = $("backtest-threshold-body");
     body.innerHTML = "";
-    thresholds.forEach(function (t) {
+    bands.forEach(function (b) {
       var tr = document.createElement("tr");
       function cell(html, cls) {
         var td = document.createElement("td");
@@ -996,14 +1099,14 @@ var PAGE_SIZE = 1000;     // Supabase REST 1회 최대 행 수
         td.innerHTML = html;
         return td;
       }
-      tr.appendChild(cell(String(t.threshold) + "점"));
-      tr.appendChild(cell(String(t.signals)));
-      tr.appendChild(cell(t.win_rate == null ? "-" : fmtNum(t.win_rate) + "%"));
-      [t.avg_5d, t.avg_10d, t.avg_20d, t.avg_mae_5d, t.avg_mfe_5d].forEach(function (v) {
+      tr.appendChild(cell(String(b.band)));
+      tr.appendChild(cell(String(b.signals)));
+      tr.appendChild(cell(b.win_rate == null ? "-" : fmtNum(b.win_rate) + "%"));
+      [b.avg_5d, b.avg_10d, b.avg_20d, b.avg_mae_5d, b.avg_mfe_5d].forEach(function (v) {
         if (v == null || isNaN(v)) tr.appendChild(cell("-"));
         else tr.appendChild(cell(fmtPct(v), pctClass(v)));
       });
-      tr.appendChild(cell(String(t.sample_size)));
+      tr.appendChild(cell(String(b.sample_size)));
       body.appendChild(tr);
     });
   }

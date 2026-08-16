@@ -167,15 +167,15 @@ def test_update_returns_skips_when_insufficient_data(monkeypatch):
 def test_save_daily_upsert_payload(monkeypatch):
     x = {"ticker": "AAPL", "price": 100.0, "rsi": 30.0, "prev_rsi": 35.0,
          "ma20": 99.0, "ma50": 98.0, "drawdown": -12.0, "volume_ratio": 1.5,
-         "score": 80}
+         "score": 80, "relative_strength_5d": 1.5}
     db = _FakeDb()
     monkeypatch.setattr("stock_scanner.get_db", lambda: db)
     save_daily(x, "2026-08-13")
     assert db.calls == [("upsert", "daily_data", {
         "date": "2026-08-13", "ticker": "AAPL", "price": 100.0,
         "rsi": 30.0, "prev_rsi": 35.0, "ma20": 99.0, "ma50": 98.0,
-        "drawdown": -12.0, "volume_ratio": 1.5, "score": 80,
-        "score_version": 5,
+        "drawdown": -12.0, "volume_ratio": 1.5, "score": 80, "relative_strength_5d": 1.5,
+        "score_version": 6,
     }, None)]
 
 
@@ -196,7 +196,7 @@ def test_save_signal_above_threshold_upsert(monkeypatch):
     save_signal(x, "2026-08-13")
     assert db.calls == [("upsert", "signals", {
         "signal_date": "2026-08-13", "ticker": "AAPL",
-        "signal_price": 100.0, "score": 70, "score_version": 5,
+        "signal_price": 100.0, "score": 70, "score_version": 6,
         "rsi": 30.0, "drawdown": -12.0,
     }, "signal_date,ticker")]
 

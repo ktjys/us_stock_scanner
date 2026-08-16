@@ -50,14 +50,14 @@ def test_rsi_seed_matches_hand_computed_wilder():
 
 
 # ---------------------------------------------------------------------------
-# V5 스코어링
+# V6 스코어링
 # ---------------------------------------------------------------------------
 
 
 def test_rsi_tiers_are_exclusive():
     score, cond = score_signal(100.0, 37.0, 37.0, 110.0, 120.0, -2.0, 1.0)
-    assert score == 14
-    assert cond == ["RSI35~40"]
+    assert score == 15
+    assert cond == ["RSI30~40"]
 
 
 def test_rsi_rebound_is_stronger_with_larger_delta():
@@ -82,13 +82,13 @@ def test_uptrend_adds_more_points_than_broken_trend():
     assert healthy > broken
 
 
-def test_full_combo_v5_max_score():
-    # RSI20 + RSI강한반등20 + drawdown15 + MA20 15
-    # + price>MA50 8 + MA50상승7 + MA20>MA50 5
-    # + 반등+거래량10 = 100
+def test_full_combo_v6_max_score():
+    # RSI15 + RSI반등20 + 가격반등20 + 적정눌림10 + MA20회복15
+    # + 상승추세10 + QQQ대비5 + 반등+거래량5 = 100
     score, cond = score_signal(
         100.0, 32.0, 26.0, 99.0, 90.0, -15.0, 1.7,
-        ma50_prev=89.0, prev_price=98.0
+        ma50_prev=89.0, prev_price=98.0, ma20_prev=101.0,
+        relative_strength_5d=3.0
     )
     assert score == 100
     assert len(cond) == 8

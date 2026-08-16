@@ -91,6 +91,15 @@ python report.py             # 주간 리포트를 콘솔로 확인
 python report.py --weeks 4   # 최근 4주만 집계 (기본: 전체)
 python -m pytest tests/     # 테스트 실행 (pip install -r requirements-dev.txt)
 
+# 과거 daily_data/신호 백필 (env 체크 + .env 자동 로드)
+./backfill.sh                              # 기본 52주 백필 + 신호 승격 (65점 이상)
+./backfill.sh --weeks 104                  # 2년치 백필
+./backfill.sh --threshold 60               # 신호 임계값 조정 (기본 65)
+./backfill.sh --no-signals                 # 신호 승격 끄기 (daily_data만)
+./backfill.sh --tickers AAPL,MSFT          # 특정 종목만
+# 주의: backfill_daily.py를 직접 실행하면 .env가 로드되지 않아 DB 저장이 생략되므로
+# 반드시 ./backfill.sh 로 실행할 것 (watchlist.sh와 동일한 .env 자동 로드 래퍼)
+
 # 임계값별 백테스트 (fetch 1회 + 지표 선계산, lookahead bias 없음)
 # 종목은 스캐너와 동일하게 Supabase watchlist 테이블 우선(env 미설정 시 watchlist.csv 폴백)
 python backtest.py                              # 전체 watchlist, 기본 6개월, 55/60/65점 비교
@@ -132,31 +141,42 @@ python backtest.py --tickers AAPL,MSFT          # 특정 종목만
 기술적 신호는 매수 추천이나 수익을 보장하지 않습니다.
 
 
-## V5 점수식 변경
+## V6 점수식 변경
 
-V5에서는 기존의 단순 가산식 대신 아래 6개 영역으로 100점화했습니다.
+V6는 "많이 떨어진 종목"보다 **눌림 후 실제 반등이 시작된 종목**을 찾는 방향으로 변경했습니다.
 
-- RSI 상태: 20점
-- RSI 반등 폭: 20점
-- 60일 고점 대비 눌림: 15점
-- MA20 근접: 15점
-- MA50 추세/정렬: 20점
-- 거래량 + 가격 반등: 10점
+- RSI 상태: 15점
+- RSI 반등: 20점
+- 가격 반등: 20점
+- 적정 눌림폭: 10점
+- MA20 회복/접근: 15점
+- 중기 추세: 10점
+- QQQ 대비 5일 상대강도: 5점
+- 반등+거래량 확인: 5점
+- 총 100점
 
-특히 RSI가 낮다는 이유만으로 높은 점수를 주지 않고, RSI 반등과 중기 상승추세를 함께 평가합니다.
-고점 대비 -25% 이상의 급락은 오히려 낮게 평가합니다.
+백테스트는 누적 임계값(≥65 등)만 보지 않고 40~44, 45~49 ... 80+ 점수구간으로 성과를 확인하며, 동일 종목의 5일 이내 반복 신호는 최고점 1건으로 줄입니다.
 
-### 기존 Supabase 사용 시
+### V6 상세 차트
 
-`supabase_v5_migration.sql`을 SQL Editor에서 한 번 실행하세요.
+상세 화면은 동기화된 멀티패널 구조입니다.
 
-기존 데이터는 `score_version=1`, 이후 새 스캔은 `score_version=5`로 저장됩니다.
+- 기본: 가격/MA + 거래량 + RSI + V6 점수
+- 가격+점수
+- 가격+RSI
+- 가격+거래량
+- 전체
+- 사용자 정의
 
-### 백테스트
+모든 패널은 동일 날짜의 선택선과 선택값을 공유합니다.
 
-기본 임계값:
-`80,75,70,65,60,55,50,45,40`
+### V6 Supabase
 
-5/10/20일 수익률과 함께 5일 평균 MAE(최대 불리한 움직임), MFE(최대 유리한 움직임)를 계산합니다.
+기존 DB에 `relative_strength_5d` 컬럼이 필요하므로 `supabase_v6_migration.sql`을 SQL Editor에서 한 번 실행하세요. 기존 데이터의 `score_version`은 유지하고 새 스캔/백필은 `score_version=6`으로 저장합니다.
 
-**주의:** 기존 DB의 과거 `score`는 V1 점수입니다. V5 백테스트는 Yahoo Finance 원자료에서 V5 점수를 다시 계산하므로 두 값을 직접 섞어 비교하지 마세요.
+백필 예:
+`python backfill_daily.py --weeks 52 --threshold 40`
+
+백테스트 예:
+`python backtest.py --weeks 52 --thresholds 80,75,70,65,60,55,50,45,40 --json dashboard/data/backtest.json`
+

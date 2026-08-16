@@ -15,11 +15,13 @@ from typing import Any
 
 import pandas as pd
 
-from stock_scanner import (ALERT_SCORE, get_db, load_watchlist,
-                           fetch_history, rsi, score_signal)
+from stock_scanner import (ALERT_SCORE, SCORE_VERSION, get_db, load_watchlist,
+                           fetch_history, rsi, score_signal, _relative_strength_series)
 
 RET_HORIZONS = (5, 10, 20)
 DEFAULT_THRESHOLDS = "80,75,70,65,60,55,50,45,40"
+SCORE_BANDS = [(40,44),(45,49),(50,54),(55,59),(60,64),(65,69),(70,74),(75,79),(80,100)]
+COOLDOWN_DAYS = 5
 
 
 def _get_db_if_available() -> Any:
@@ -78,8 +80,13 @@ def _future_metrics(df: pd.DataFrame, idx: int) -> dict[int, dict[str, float | N
 
 
 def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
-                     start: str, end: str) -> list[dict]:
-    """한 ticker를 행 단위로 순회해 threshold 이상 신호를 기록한다."""
+                     start: str, end: str,
+                     market_df: pd.DataFrame | None = None) -> list[dict]:
+    """한 ticker를 행 단위로 순회한다.
+
+    thresholds의 최소값 이상인 점수만 기록하되, 한 날짜에는 한 건만 기록한다.
+    이후 _apply_cooldown에서 실전형 중복 신호를 제거한다.
+    """
     df = _compute_indicators(df)
     if df.empty:
         return []
@@ -88,20 +95,19 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
     if idx.tz is not None:
         idx = idx.tz_localize(None)
     mask = (idx >= pd.Timestamp(start)) & (idx <= pd.Timestamp(end))
+    rs_series = _relative_strength_series(df, market_df)
+    min_score = min(thresholds) if thresholds else 0
 
     records: list[dict] = []
     close = df["Close"].astype(float)
     for i in range(len(df)):
-        if not mask[i]:
+        if not mask[i] or i == 0:
             continue
-        if i == 0:
-            continue
-        # 실전 compute_signal의 dropna()와 동일 조건: 5개 지표 + 직전 RSI가
-        # 모두 유효해야 스코어링한다 (어느 하나라도 NaN이면 스킵).
         if (pd.isna(df["rsi"].iloc[i]) or pd.isna(df["ma20"].iloc[i])
                 or pd.isna(df["ma50"].iloc[i]) or pd.isna(df["high60"].iloc[i])
                 or pd.isna(df["avgvol"].iloc[i]) or pd.isna(df["rsi"].iloc[i - 1])):
             continue
+
         price = float(close.iloc[i])
         rv = float(df["rsi"].iloc[i])
         prev = float(df["rsi"].iloc[i - 1])
@@ -109,40 +115,77 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
         ma50 = float(df["ma50"].iloc[i])
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
         vr = float(df["Volume"].iloc[i]) / float(df["avgvol"].iloc[i])
-
         ma50_prev = float(df["ma50"].iloc[i - 1])
+        ma20_prev = float(df["ma20"].iloc[i - 1])
         prev_price = float(close.iloc[i - 1])
+        rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
+
         score, _ = score_signal(
             price, rv, prev, ma20, ma50, dd, vr,
-            ma50_prev=ma50_prev, prev_price=prev_price
+            ma50_prev=ma50_prev, prev_price=prev_price,
+            ma20_prev=ma20_prev, relative_strength_5d=rs5
         )
-        if score < thresholds[-1]:
+        if score < min_score:
             continue
+
         metrics = _future_metrics(df, i)
         date = str(df.index[i])[:10]
-        for t in thresholds:
-            if score >= t:
-                records.append({
-                    "date": date, "ticker": ticker, "score": score, "price": price,
-                    "ret5": metrics[5]["ret"], "ret10": metrics[10]["ret"],
-                    "ret20": metrics[20]["ret"],
-                    "mfe5": metrics[5]["mfe"], "mfe10": metrics[10]["mfe"],
-                    "mfe20": metrics[20]["mfe"],
-                    "mae5": metrics[5]["mae"], "mae10": metrics[10]["mae"],
-                    "mae20": metrics[20]["mae"],
-                    "threshold": t,
-                })
+        records.append({
+            "date": date, "ticker": ticker, "score": score, "price": price,
+            "relative_strength_5d": rs5,
+            "ret5": metrics[5]["ret"], "ret10": metrics[10]["ret"],
+            "ret20": metrics[20]["ret"],
+            "mfe5": metrics[5]["mfe"], "mfe10": metrics[10]["mfe"],
+            "mfe20": metrics[20]["mfe"],
+            "mae5": metrics[5]["mae"], "mae10": metrics[10]["mae"],
+            "mae20": metrics[20]["mae"],
+        })
     return records
+
+
+def _apply_cooldown(records: list[dict], cooldown_days: int = COOLDOWN_DAYS) -> list[dict]:
+    """동일 종목의 연속 신호를 cooldown 기간 내 1건으로 제한한다.
+
+    같은 기간에 여러 점수가 발생하면 첫 신호가 아니라 가장 높은 점수를 남긴다.
+    """
+    out: list[dict] = []
+    by_ticker: dict[str, list[dict]] = {}
+    for r in records:
+        by_ticker.setdefault(r["ticker"], []).append(r)
+
+    for rows in by_ticker.values():
+        rows = sorted(rows, key=lambda r: r["date"])
+        i = 0
+        while i < len(rows):
+            anchor = rows[i]
+            anchor_date = pd.Timestamp(anchor["date"])
+            group = [anchor]
+            j = i + 1
+            while j < len(rows):
+                d = pd.Timestamp(rows[j]["date"])
+                if (d - anchor_date).days > cooldown_days:
+                    break
+                group.append(rows[j])
+                j += 1
+            # cooldown 구간에서는 가장 높은 점수의 신호 하나만 채택
+            chosen = max(group, key=lambda r: (r["score"], r["date"]))
+            chosen = dict(chosen)
+            chosen["cooldown_count"] = len(group)
+            out.append(chosen)
+            i = j
+    return sorted(out, key=lambda r: (r["date"], r["ticker"]))
 
 
 def _run_backtest(thresholds: list[int], weeks: int,
                   tickers: list[str]) -> dict:
-    """fetch 루프 + 백테스트 실행 (main과 build_backtest_summary 공용).
-
-    fetch 실패 종목은 경고 후 스킵하고, 데이터가 하나도 없으면
-    records/tickers가 빈 dict를 반환한다.
-    """
+    """fetch + V6 백테스트. QQQ 상대강도와 5일 cooldown을 함께 적용한다."""
     dfs: dict[str, pd.DataFrame] = {}
+    try:
+        market_df = fetch_history("QQQ")
+    except Exception as e:
+        market_df = pd.DataFrame()
+        print(f"경고: QQQ 상대강도 데이터 조회 실패 - {e}", file=sys.stderr)
+
     for ticker in tickers:
         try:
             df = fetch_history(ticker)
@@ -156,18 +199,22 @@ def _run_backtest(thresholds: list[int], weeks: int,
         print(f"{ticker} fetch 완료", file=sys.stderr)
 
     if not dfs:
-        return {"records": [], "tickers": [], "start": "", "end": "", "weeks": weeks}
+        return {"records": [], "raw_records": [], "tickers": [], "start": "", "end": "", "weeks": weeks}
 
     end = min(df.index.max() for df in dfs.values())
     start = end - timedelta(weeks=weeks)
     start_str, end_str = str(start.date()), str(end.date())
 
-    records: list[dict] = []
+    raw_records: list[dict] = []
     for ticker, df in dfs.items():
-        records.extend(_backtest_ticker(ticker, df, thresholds, start_str, end_str))
+        raw_records.extend(_backtest_ticker(
+            ticker, df, thresholds, start_str, end_str, market_df
+        ))
 
-    return {"records": records, "tickers": list(dfs),
-            "start": start_str, "end": end_str, "weeks": weeks}
+    records = _apply_cooldown(raw_records, COOLDOWN_DAYS)
+    return {"records": records, "raw_records": raw_records,
+            "tickers": list(dfs), "start": start_str,
+            "end": end_str, "weeks": weeks}
 
 
 def _fmt_ret(v: float | None) -> str:
@@ -182,11 +229,19 @@ def _fmt_win(v: float | None) -> str:
     return "-" if v is None else f"{v:.1f}%"
 
 
-def _summarize(records: list[dict], thresholds: list[int]) -> pd.DataFrame:
-    """threshold별 신호 건수/승률/수익률/MAE/MFE 요약."""
+def _score_band(score: int) -> str:
+    for lo, hi in SCORE_BANDS:
+        if lo <= score <= hi:
+            return f"{lo}-{hi}" if hi < 100 else "80+"
+    return "<40"
+
+
+def _summarize_bands(records: list[dict]) -> pd.DataFrame:
+    """V6 점수 구간별(중복 신호 제거 후) 성과 요약."""
     rows = []
-    for t in thresholds:
-        recs = [r for r in records if r["threshold"] == t]
+    for lo, hi in SCORE_BANDS:
+        label = f"{lo}-{hi}" if hi < 100 else "80+"
+        recs = [r for r in records if lo <= r["score"] <= hi]
 
         def vals(key: str) -> list[float]:
             return [r[key] for r in recs if r[key] is not None]
@@ -197,102 +252,84 @@ def _summarize(records: list[dict], thresholds: list[int]) -> pd.DataFrame:
         r5, r10, r20 = vals("ret5"), vals("ret10"), vals("ret20")
         win5 = sum(x > 0 for x in r5) / len(r5) * 100 if r5 else None
         rows.append({
-            "threshold": t,
-            "신호수": len(recs),
-            "승률(5일)": _fmt_win(win5),
-            "평균수익률 5일": _fmt_avg(mean(r5)),
-            "평균수익률 10일": _fmt_avg(mean(r10)),
-            "평균수익률 20일": _fmt_avg(mean(r20)),
-            "평균MAE 5일": _fmt_avg(mean(vals("mae5"))),
-            "평균MFE 5일": _fmt_avg(mean(vals("mfe5"))),
-            "표본수": len(r5),
+            "band": label,
+            "min_score": lo,
+            "max_score": hi,
+            "signals": len(recs),
+            "win_rate": win5,
+            "avg_5d": mean(r5),
+            "avg_10d": mean(r10),
+            "avg_20d": mean(r20),
+            "avg_mae_5d": mean(vals("mae5")),
+            "avg_mfe_5d": mean(vals("mfe5")),
+            "sample_size": len(r5),
         })
     return pd.DataFrame(rows)
 
 
 def build_backtest_summary(weeks: int = 26, tickers: str | None = None) -> str:
-    """주간 리포트용 백테스트 요약 텍스트 (실패 시 빈 문자열)."""
+    """주간 리포트용 V6 점수구간 요약 텍스트."""
     try:
-        thresholds = sorted({int(t) for t in DEFAULT_THRESHOLDS.split(",")},
-                            reverse=True)
+        thresholds = sorted({int(t) for t in DEFAULT_THRESHOLDS.split(",")}, reverse=True)
         db = _get_db_if_available()
         result = _run_backtest(thresholds, weeks, _load_tickers(tickers, db))
         if not result["tickers"]:
             return "백테스트 데이터 없음"
-        lines = [f"📊 백테스트 (최근 {weeks}주, {len(result['tickers'])}종목)"]
-        for _, row in _summarize(result["records"], thresholds).iterrows():
-            win = row["승률(5일)"]
-            if win == "-":
-                lines.append(f"{row['threshold']}점: {row['신호수']}건 | 데이터 부족")
-            else:
-                lines.append(f"{row['threshold']}점: {row['신호수']}건 | 승률 {win}")
+        lines = [f"📊 V6 백테스트 (최근 {weeks}주, {len(result['tickers'])}종목, cooldown {COOLDOWN_DAYS}일)"]
+        for _, row in _summarize_bands(result["records"]).iterrows():
+            win = row["win_rate"]
+            lines.append(
+                f"{row['band']}점: {row['signals']}건 | "
+                f"5일승률 {win:.1f}% | 5일평균 {row['avg_5d']:+.2f}%"
+                if win == win and row["avg_5d"] == row["avg_5d"]
+                else f"{row['band']}점: {row['signals']}건 | 데이터 부족"
+            )
         return "\n".join(lines)
     except Exception:
         return ""
 
 
 def _build_json_report(records: list[dict], thresholds: list[int], tickers: list[str],
-                       start: str, end: str, weeks: int) -> dict:
-    """대시보드용 JSON 리포트 dict."""
-    thr_rows = []
-    for t in sorted(thresholds, reverse=True):
-        recs = [r for r in records if r["threshold"] == t]
-
-        def vals(key: str) -> list[float]:
-            return [r[key] for r in recs if r[key] is not None]
-
-        def mean(xs: list[float]) -> float | None:
-            return sum(xs) / len(xs) if xs else None
-
-        r5, r10, r20 = vals("ret5"), vals("ret10"), vals("ret20")
-        mae5, mfe5 = vals("mae5"), vals("mfe5")
-        win5 = sum(x > 0 for x in r5) / len(r5) * 100 if r5 else None
-        thr_rows.append({
-            "threshold": t,
-            "signals": len(recs),
-            "win_rate": win5,
-            "avg_5d": mean(r5),
-            "avg_10d": mean(r10),
-            "avg_20d": mean(r20),
-            "avg_mae_5d": mean(mae5),
-            "avg_mfe_5d": mean(mfe5),
-            "sample_size": len(r5),
-        })
-
+                       start: str, end: str, weeks: int,
+                       raw_records: list[dict] | None = None) -> dict:
+    """대시보드용 V6 JSON 리포트."""
+    bands = _summarize_bands(records).to_dict(orient="records")
     uniq = {}
     for r in sorted(records, key=lambda r: (r["date"], r["ticker"], -r["score"])):
         uniq.setdefault((r["date"], r["ticker"]), r)
     recent = [
         {"date": r["date"], "ticker": r["ticker"], "score": r["score"],
          "ret5": r["ret5"], "ret10": r["ret10"], "ret20": r["ret20"],
-         "mae5": r["mae5"], "mfe5": r["mfe5"]}
-        for r in sorted(uniq.values(), key=lambda r: (r["date"], r["score"]),
-                        reverse=True)[:30]
+         "mae5": r["mae5"], "mfe5": r["mfe5"],
+         "cooldown_count": r.get("cooldown_count", 1)}
+        for r in sorted(uniq.values(), key=lambda r: (r["date"], r["score"]), reverse=True)[:30]
     ]
-
     return {
-        "version": "v5",
+        "version": f"v{SCORE_VERSION}",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period_start": start,
         "period_end": end,
         "weeks": weeks,
         "ticker_count": len(tickers),
         "tickers": tickers,
-        "thresholds": thr_rows,
+        "cooldown_days": COOLDOWN_DAYS,
+        "thresholds": [],  # backward compatibility
+        "bands": bands,
         "recent_signals": recent,
+        "raw_signal_count": len(raw_records or []),
+        "cooldown_signal_count": len(records),
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="과거 기간 threshold별 백테스트")
+    parser = argparse.ArgumentParser(description="V6 점수구간 백테스트")
     parser.add_argument("--thresholds", default=DEFAULT_THRESHOLDS,
-                        help="콤마 구분 스코어 임계값 (기본: 65,60,55)")
-    parser.add_argument("--weeks", type=int, default=26,
-                        help="시뮬레이션 기간 (df 마지막 날짜 기준 최근 N주)")
+                        help="최저 스코어 필터로 사용할 임계값 목록 (기본 40~80)")
+    parser.add_argument("--weeks", type=int, default=52,
+                        help="시뮬레이션 기간 (기본 52주)")
     parser.add_argument("--tickers", help="콤마 구분 ticker (지정 시 watchlist 대체)")
     parser.add_argument("--verbose", action="store_true", help="신호 상세 목록 출력")
-    parser.add_argument("--json", default=None,
-                        help="결과를 이 경로에 JSON으로 저장")
+    parser.add_argument("--json", default=None, help="결과 JSON 경로")
     args = parser.parse_args()
 
     thresholds = sorted({int(t) for t in args.thresholds.split(",")}, reverse=True)
@@ -308,33 +345,31 @@ def main() -> None:
         print("백테스트할 데이터 없음", file=sys.stderr)
         sys.exit(1)
 
-    print(f"=== 백테스트 결과 (기간: {result['start']} ~ {result['end']}, "
-          f"ticker {len(result['tickers'])}개) ===")
-    print(_summarize(result["records"], thresholds).to_string(index=False))
+    print(f"=== V6 백테스트 결과 ({result['start']} ~ {result['end']}, "
+          f"ticker {len(result['tickers'])}개, cooldown {COOLDOWN_DAYS}일) ===")
+    print(_summarize_bands(result["records"]).to_string(index=False))
 
     if args.json:
-        report = _build_json_report(result["records"], thresholds, result["tickers"],
-                                    result["start"], result["end"], args.weeks)
+        report = _build_json_report(
+            result["records"], thresholds, result["tickers"],
+            result["start"], result["end"], args.weeks, result["raw_records"]
+        )
         os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         print(f"JSON 저장 완료: {args.json}", file=sys.stderr)
 
     if args.verbose:
-        uniq = {}
-        for r in sorted(result["records"], key=lambda r: (r["date"], r["ticker"], -r["score"])):
-            uniq.setdefault((r["date"], r["ticker"]), r)
-        print("\n=== 신호 상세 ===")
-        if uniq:
-            detail = pd.DataFrame([
-                {"날짜": r["date"], "ticker": r["ticker"], "점수": r["score"],
-                 "5일": _fmt_ret(r["ret5"]), "10일": _fmt_ret(r["ret10"]),
-                 "20일": _fmt_ret(r["ret20"])}
-                for r in uniq.values()
-            ])
-            print(detail.to_string(index=False))
-        else:
-            print("신호 없음")
+        detail = pd.DataFrame([
+            {"날짜": r["date"], "ticker": r["ticker"], "점수": r["score"],
+             "구간": _score_band(r["score"]),
+             "5일": _fmt_ret(r["ret5"]), "10일": _fmt_ret(r["ret10"]),
+             "20일": _fmt_ret(r["ret20"]),
+             "cooldown내 원신호": r.get("cooldown_count", 1)}
+            for r in result["records"]
+        ])
+        print("\n=== 채택 신호 상세 ===")
+        print(detail.to_string(index=False) if not detail.empty else "신호 없음")
 
 
 if __name__ == "__main__":
