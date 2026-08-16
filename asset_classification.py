@@ -98,8 +98,8 @@ def _classify_etf(info: dict[str, Any]) -> tuple[str, float, str]:
 def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
     """Yahoo Finance metadata를 기반으로 장기투자용 전략군을 자동 분류한다.
 
-    분류는 투자 역할(strategy_type)을 결정하고,
-    세부 특성은 이후 Opportunity Engine에서 별도로 평가한다.
+    전략군은 투자 역할을 나타내며, 세부 위험/변동성 특성은
+    이후 Opportunity Engine에서 별도로 평가한다.
     """
 
     ticker = ticker.strip().upper()
@@ -112,7 +112,12 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
     if _is_etf(info):
         strategy, confidence, reason = _classify_etf(info)
         return AssetClassification(
-            ticker, "etf", strategy, confidence, "auto", reason
+            ticker,
+            "etf",
+            strategy,
+            confidence,
+            "auto",
+            reason,
         )
 
     # ---------------------------------------------------------
@@ -122,29 +127,22 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
     industry = _text(info.get("industry"))
     quote_type = _text(info.get("quoteType"))
 
-    text = " ".join(
-        _text(info.get(k))
-        for k in (
-            "longName",
-            "shortName",
-            "industry",
-            "sector",
-            "description",
-        )
-    ).lower()
-
     beta = _num(info.get("beta"))
     market_cap = _num(info.get("marketCap"))
     revenue_growth = _num(info.get("revenueGrowth"))
     earnings_growth = _num(info.get("earningsGrowth"))
 
     # ---------------------------------------------------------
-    # 3. 투자 성격 판단용 기본 신호
+    # 3. 데이터 상태
     # ---------------------------------------------------------
-
     mega_cap = (
         market_cap is not None
         and market_cap >= 100_000_000_000
+    )
+
+    large_cap = (
+        market_cap is not None
+        and market_cap >= 50_000_000_000
     )
 
     high_volatility = (
@@ -152,31 +150,38 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         and beta >= 1.8
     )
 
-    growth_signal = (
-        (revenue_growth is not None and revenue_growth >= 0.20)
-        or
-        (earnings_growth is not None and earnings_growth >= 0.25)
-        or
-        any(
-            x in text
-            for x in (
-                "growth",
-                "semiconductor",
-                "internet",
-                "software",
-                "artificial intelligence",
-                " ai ",
-            )
+    # ---------------------------------------------------------
+    # 4. 강한 성장 신호
+    #
+    # 산업명이 Technology / Software / Semiconductor라는 이유만으로
+    # Growth로 분류하지 않는다.
+    #
+    # 실제 성장률을 우선한다.
+    # ---------------------------------------------------------
+    strong_revenue_growth = (
+        revenue_growth is not None
+        and revenue_growth >= 0.20
+    )
+
+    strong_earnings_growth = (
+        earnings_growth is not None
+        and earnings_growth >= 0.50
+    )
+
+    established_growth_signal = (
+        large_cap
+        and (
+            strong_revenue_growth
+            or strong_earnings_growth
         )
     )
 
     # ---------------------------------------------------------
-    # 4. Speculative / Emerging
+    # 5. Speculative / Emerging
     #
-    # 현재 실적/성장 데이터가 부족하고,
-    # 미래 사업 기대에 크게 의존하는 종목을 우선 분류한다.
+    # 현재 실적이 충분히 확인되지 않고 미래 사업에 대한
+    # 기대 의존도가 높은 종목을 별도로 분리한다.
     # ---------------------------------------------------------
-
     speculative_industries = {
         "utilities - independent power producers",
     }
@@ -196,7 +201,19 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
 
     speculative_signal = (
         industry in speculative_industries
-        or any(x in text for x in speculative_keywords)
+        or any(
+            keyword in " ".join(
+                _text(info.get(k)).lower()
+                for k in (
+                    "longName",
+                    "shortName",
+                    "industry",
+                    "sector",
+                    "description",
+                )
+            )
+            for keyword in speculative_keywords
+        )
         or (
             market_cap is not None
             and market_cap < 20_000_000_000
@@ -216,12 +233,36 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         )
 
     # ---------------------------------------------------------
-    # 5. Quality
+    # 6. Established Growth
     #
-    # Quality와 Growth는 겹칠 수 있지만,
-    # 여기서는 장기 보유 관점의 '사업 성숙도/규모'를 우선한다.
+    # Quality보다 성장성이 투자 논리에서 더 중요한
+    # 대형/성숙 성장주.
+    #
+    # 반드시 Quality보다 먼저 판단한다.
     # ---------------------------------------------------------
+    if established_growth_signal:
+        confidence = 0.84
 
+        # beta가 매우 높으면 분류는 Established Growth를 유지하되
+        # confidence를 조금 낮춘다.
+        if high_volatility:
+            confidence = 0.80
+
+        return AssetClassification(
+            ticker,
+            "equity",
+            "established_growth",
+            confidence,
+            "auto",
+            "충분한 사업 규모와 뚜렷한 매출 또는 이익 성장성이 확인됨",
+        )
+
+    # ---------------------------------------------------------
+    # 7. Quality
+    #
+    # 성장률이 특별히 높지는 않지만 규모와 사업 성숙도가
+    # 장기 보유에 적합한 대형/우량주를 분류한다.
+    # ---------------------------------------------------------
     quality_sectors = {
         "technology",
         "healthcare",
@@ -238,16 +279,14 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         "insurance - diversified",
         "medical care facilities",
         "packaged foods",
+        "information technology services",
+        "consumer electronics",
     }
 
-    # 초대형주이면서 beta가 극단적으로 높지 않고
-    # 성장/사업 기반이 어느 정도 확인되는 경우 Quality 후보.
     quality_signal = (
         mega_cap
-        and not high_volatility
         and (
-            growth_signal
-            or sector in quality_sectors
+            sector in quality_sectors
             or industry in quality_industries
         )
     )
@@ -259,41 +298,12 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             "quality",
             0.84,
             "auto",
-            "초대형 규모와 검증된 사업 기반을 갖춘 장기 보유 우량주 특성이 감지됨",
+            "대형 규모와 성숙한 사업 기반을 갖춘 장기 보유 우량주 특성이 감지됨",
         )
 
     # ---------------------------------------------------------
-    # 6. Established Growth
-    #
-    # 규모가 충분하고 성장성이 확인되지만,
-    # Quality보다 성장성의 비중이 큰 종목.
+    # 8. General Equity
     # ---------------------------------------------------------
-
-    established_growth_signal = (
-        growth_signal
-        and market_cap is not None
-        and market_cap >= 50_000_000_000
-    )
-
-    if established_growth_signal:
-        confidence = 0.84
-
-        if high_volatility:
-            confidence = 0.80
-
-        return AssetClassification(
-            ticker,
-            "equity",
-            "established_growth",
-            confidence,
-            "auto",
-            "충분한 사업 규모와 성장성이 확인되어 검증된 성장주 특성이 감지됨",
-        )
-
-    # ---------------------------------------------------------
-    # 7. General Equity
-    # ---------------------------------------------------------
-
     if quote_type in ("equity", "stock", ""):
         return AssetClassification(
             ticker,
@@ -304,6 +314,9 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             "명확한 Quality/Growth/Speculative 분류 근거가 부족함",
         )
 
+    # ---------------------------------------------------------
+    # 9. Unsupported asset
+    # ---------------------------------------------------------
     return AssetClassification(
         ticker,
         "other",
