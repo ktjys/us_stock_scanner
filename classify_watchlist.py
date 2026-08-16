@@ -119,6 +119,7 @@ def classify_one(supabase, ticker: str):
 	    "beta",
         ):
 	    print(f"  {key}: {info.get(key)}")
+
     result = classify_asset(ticker, info)
 
     save_classification(supabase, result)
