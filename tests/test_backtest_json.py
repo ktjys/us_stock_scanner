@@ -17,7 +17,8 @@ def test_json_report_has_v6_bands_and_recent_signals():
         _rec("2026-07-25", "MSFT", 62, -1.0, None, None, .5, -2.0),
     ]
     report = _build_json_report(records, [80, 70, 60, 50, 40],
-                                ["AAPL", "MSFT"], "2026-02-01", "2026-08-01", 26)
+                                ["AAPL", "MSFT"], "2026-02-01", "2026-08-01", 26,
+                                raw_records=records)
 
     assert report["version"] == "v6"
     assert report["period_start"] == "2026-02-01"

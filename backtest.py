@@ -120,7 +120,7 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
         prev_price = float(close.iloc[i - 1])
         rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
 
-        score, _ = score_signal(
+        score, _, details = score_signal(
             price, rv, prev, ma20, ma50, dd, vr,
             ma50_prev=ma50_prev, prev_price=prev_price,
             ma20_prev=ma20_prev, relative_strength_5d=rs5
@@ -130,16 +130,49 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
 
         metrics = _future_metrics(df, i)
         date = str(df.index[i])[:10]
+
         records.append({
-            "date": date, "ticker": ticker, "score": score, "price": price,
+            # 기본 정보
+            "date": date,
+            "ticker": ticker,
+            "score": score,
+            "price": price,
+
+            # 원본 지표
+            "rsi": rv,
+            "rsi_delta": rv - prev,
+            "ma20": ma20,
+            "ma50": ma50,
+            "drawdown": dd,
+            "volume_ratio": vr,
             "relative_strength_5d": rs5,
-            "ret5": metrics[5]["ret"], "ret10": metrics[10]["ret"],
+
+            # V6 세부 점수
+            "rsi_state_score": details["rsi_state"],
+            "rsi_rebound_score": details["rsi_rebound"],
+            "price_rebound_score": details["price_rebound"],
+            "drawdown_score": details["drawdown"],
+            "ma20_score": details["ma20"],
+            "trend_score": details["trend"],
+            "relative_strength_score": details["relative_strength"],
+            "volume_score": details["volume"],
+
+            # 미래 수익률
+            "ret5": metrics[5]["ret"],
+            "ret10": metrics[10]["ret"],
             "ret20": metrics[20]["ret"],
-            "mfe5": metrics[5]["mfe"], "mfe10": metrics[10]["mfe"],
+
+            # MFE
+            "mfe5": metrics[5]["mfe"],
+            "mfe10": metrics[10]["mfe"],
             "mfe20": metrics[20]["mfe"],
-            "mae5": metrics[5]["mae"], "mae10": metrics[10]["mae"],
+
+            # MAE
+            "mae5": metrics[5]["mae"],
+            "mae10": metrics[10]["mae"],
             "mae20": metrics[20]["mae"],
         })
+
     return records
 
 
@@ -318,6 +351,7 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
         "recent_signals": recent,
         "raw_signal_count": len(raw_records or []),
         "cooldown_signal_count": len(records),
+        "raw_records": raw_records or [],
     }
 
 
