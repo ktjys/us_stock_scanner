@@ -101,23 +101,36 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
     전략군은 투자 역할을 나타내며, 세부 위험/변동성 특성은
     이후 Opportunity Engine에서 별도로 평가한다.
 
-    분류 원칙:
-      1. ETF는 ETF 전략군으로 먼저 분류
-      2. 미래사업/신기술/낮은 실적 가시성은 Speculative로 분류
-      3. 충분한 규모와 실제 성장성이 확인되면 Established Growth
-      4. 성장성이 상대적으로 낮아도 대형/성숙 사업이면 Quality
-      5. 나머지는 General
+    분류 우선순위:
+
+        ETF
+          ↓
+        Speculative / Emerging
+          ↓
+        Established Growth
+          ↓
+        Quality
+          ↓
+        General
+
+    중요한 원칙:
+      - ticker별 하드코딩을 하지 않는다.
+      - 산업명 하나만으로 Speculative를 결정하지 않는다.
+      - 성장률이 높더라도 수익성이 낮고 미래사업 의존도가 높으면
+        Speculative로 분류할 수 있다.
+      - 세부 위험/변동성은 이후 Opportunity Engine에서 평가한다.
     """
 
     ticker = ticker.strip().upper()
+
     if not ticker:
         raise ValueError("ticker가 비어 있습니다.")
 
     info = info or {}
 
-    # ---------------------------------------------------------
+    # =========================================================
     # 1. ETF
-    # ---------------------------------------------------------
+    # =========================================================
     if _is_etf(info):
         strategy, confidence, reason = _classify_etf(info)
 
@@ -130,9 +143,9 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             reason,
         )
 
-    # ---------------------------------------------------------
+    # =========================================================
     # 2. 기본 metadata
-    # ---------------------------------------------------------
+    # =========================================================
     sector = _text(info.get("sector")).strip().lower()
     industry = _text(info.get("industry")).strip().lower()
     quote_type = _text(info.get("quoteType")).strip().lower()
@@ -143,10 +156,31 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
 
     beta = _num(info.get("beta"))
     market_cap = _num(info.get("marketCap"))
+
     revenue_growth = _num(info.get("revenueGrowth"))
     earnings_growth = _num(info.get("earningsGrowth"))
 
-    # Yahoo metadata를 하나의 검색 대상 텍스트로 통합
+    # ---------------------------------------------------------
+    # 수익성 / 밸류에이션
+    #
+    # Yahoo metadata가 없는 경우 None으로 처리한다.
+    # ---------------------------------------------------------
+    profit_margin = _num(info.get("profitMargins"))
+    operating_margin = _num(info.get("operatingMargins"))
+    return_on_equity = _num(info.get("returnOnEquity"))
+
+    trailing_eps = _num(info.get("trailingEps"))
+    forward_eps = _num(info.get("forwardEps"))
+
+    trailing_pe = _num(info.get("trailingPE"))
+    forward_pe = _num(info.get("forwardPE"))
+
+    price_to_sales = _num(info.get("priceToSalesTrailing12Months"))
+    price_to_book = _num(info.get("priceToBook"))
+
+    # =========================================================
+    # 3. 통합 metadata
+    # =========================================================
     metadata_text = " ".join(
         value
         for value in (
@@ -159,9 +193,9 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         if value
     )
 
-    # ---------------------------------------------------------
-    # 3. 데이터 상태
-    # ---------------------------------------------------------
+    # =========================================================
+    # 4. 회사 규모
+    # =========================================================
     mega_cap = (
         market_cap is not None
         and market_cap >= 100_000_000_000
@@ -182,6 +216,9 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         and market_cap < 20_000_000_000
     )
 
+    # =========================================================
+    # 5. 변동성
+    # =========================================================
     high_volatility = (
         beta is not None
         and beta >= 1.8
@@ -192,17 +229,17 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         and beta >= 2.2
     )
 
-    # ---------------------------------------------------------
-    # 4. 성장 신호
-    #
-    # 산업명이 Technology / Software / Semiconductor라는
-    # 이유만으로 Growth로 분류하지 않는다.
-    #
-    # 실제 성장률을 우선한다.
-    # ---------------------------------------------------------
+    # =========================================================
+    # 6. 성장성
+    # =========================================================
     strong_revenue_growth = (
         revenue_growth is not None
         and revenue_growth >= 0.20
+    )
+
+    very_strong_revenue_growth = (
+        revenue_growth is not None
+        and revenue_growth >= 0.50
     )
 
     strong_earnings_growth = (
@@ -218,9 +255,43 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         )
     )
 
-    # ---------------------------------------------------------
-    # 5. 실적 가시성
-    # ---------------------------------------------------------
+    # =========================================================
+    # 7. 수익성 상태
+    # =========================================================
+
+    negative_profitability = (
+        (
+            profit_margin is not None
+            and profit_margin < 0
+        )
+        or (
+            operating_margin is not None
+            and operating_margin < 0
+        )
+        or (
+            trailing_eps is not None
+            and trailing_eps < 0
+        )
+    )
+
+    weak_profitability = (
+        profit_margin is not None
+        and profit_margin < 0.05
+    )
+
+    strong_profitability = (
+        profit_margin is not None
+        and profit_margin >= 0.15
+    )
+
+    positive_eps = (
+        trailing_eps is not None
+        and trailing_eps > 0
+    )
+
+    # =========================================================
+    # 8. 성장 데이터 가시성
+    # =========================================================
     missing_growth_data = (
         revenue_growth is None
         and earnings_growth is None
@@ -237,16 +308,12 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         )
     )
 
-    # ---------------------------------------------------------
-    # 6. Speculative / Emerging
+    # =========================================================
+    # 9. 미래사업 / Emerging 산업
     #
-    # ticker를 직접 지정하지 않는다.
-    #
-    # 사업 설명/산업/회사명 등의 metadata에서
-    # 미래사업 또는 신기술 사업 특성을 찾아낸다.
-    # ---------------------------------------------------------
+    # 산업명 하나만으로 판정하지 않는다.
+    # =========================================================
 
-    # 미래사업 성격이 강한 산업군
     speculative_industries = {
         "utilities - independent power producers",
         "uranium",
@@ -258,12 +325,7 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
     )
 
     # ---------------------------------------------------------
-    # 미래사업 / 신기술 키워드
-    #
-    # 너무 일반적인 단어는 제외한다.
-    # 예:
-    #   "technology", "software", "aerospace"
-    # 같은 단어만으로 speculative 처리하지 않는다.
+    # 미래사업 관련 키워드
     # ---------------------------------------------------------
     speculative_keywords = (
         # Nuclear / advanced energy
@@ -292,7 +354,7 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         "quantum computing",
         "quantum technology",
 
-        # Business maturity
+        # Early-stage business
         "pre-revenue",
         "pre revenue",
         "development stage",
@@ -311,48 +373,105 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
         speculative_keyword_hits
     )
 
-    # ---------------------------------------------------------
-    # 7. 미래사업 + 실적 가시성 부족
+    # =========================================================
+    # 10. Aerospace / Space 산업
     #
-    # SpaceX 같은 경우처럼 미래사업 특성이 강하지만
-    # 전통적인 성장률 데이터가 충분하지 않은 경우.
-    # ---------------------------------------------------------
-    emerging_business_signal = (
+    # "aerospace & defense" 자체만으로 speculative 처리하지 않는다.
+    #
+    # 대신 미래사업 산업 + 낮은 수익성/높은 밸류에이션 등의
+    # 위험 특성이 결합될 경우 speculative로 판단한다.
+    # =========================================================
+
+    aerospace_industry_signal = (
+        "aerospace" in industry
+        or "space" in industry
+    )
+
+    # =========================================================
+    # 11. 미래사업 + 낮은 수익성
+    #
+    # SpaceX 같은 종목을 잡는 핵심 조건.
+    #
+    # 높은 매출 성장만으로 Established Growth로 보내지 않고,
+    # 미래사업 산업에서 아직 수익성이 확보되지 않았다면
+    # Speculative를 우선한다.
+    # =========================================================
+
+    emerging_unprofitable_signal = (
         (
             speculative_industry_signal
             or speculative_keyword_signal
+            or aerospace_industry_signal
         )
-        and (
-            missing_growth_data
-            or weak_growth_data
-        )
+        and negative_profitability
     )
 
-    # ---------------------------------------------------------
-    # 8. 미래사업 + 높은 변동성
+    # =========================================================
+    # 12. 미래사업 + 매우 높은 성장 + 낮은 수익성
     #
-    # 성장률 데이터가 존재하더라도
-    # 미래사업 특성과 높은 beta가 함께 나타나면
-    # Established Growth보다 Speculative를 우선한다.
-    # ---------------------------------------------------------
-    emerging_high_risk_signal = (
+    # 성장률이 높더라도:
+    #
+    #   미래사업
+    #   +
+    #   높은 성장
+    #   +
+    #   낮은 수익성
+    #
+    # 은 Established Growth보다 Speculative에 가깝다.
+    # =========================================================
+
+    emerging_high_growth_low_quality_signal = (
         (
             speculative_industry_signal
             or speculative_keyword_signal
+            or aerospace_industry_signal
         )
-        and high_volatility
         and (
-            not established_growth_signal
-            or weak_growth_data
+            very_strong_revenue_growth
+            or strong_earnings_growth
+        )
+        and (
+            negative_profitability
+            or weak_profitability
         )
     )
 
-    # ---------------------------------------------------------
-    # 9. 소형/중형 + 실적 가시성 부족 + 고변동성
+    # =========================================================
+    # 13. 미래사업 + 극단적인 밸류에이션
     #
-    # 특정 산업을 하드코딩하지 않고,
-    # 일반적인 speculative 패턴을 포착한다.
-    # ---------------------------------------------------------
+    # P/S가 지나치게 높거나 P/B가 지나치게 높은 경우.
+    #
+    # 값이 없는 경우에는 판단하지 않는다.
+    # =========================================================
+
+    extreme_valuation_signal = (
+        (
+            price_to_sales is not None
+            and price_to_sales >= 20
+        )
+        or (
+            price_to_book is not None
+            and price_to_book >= 15
+        )
+        or (
+            forward_pe is not None
+            and forward_pe >= 80
+        )
+    )
+
+    emerging_extreme_valuation_signal = (
+        (
+            speculative_industry_signal
+            or speculative_keyword_signal
+            or aerospace_industry_signal
+        )
+        and extreme_valuation_signal
+    )
+
+    # =========================================================
+    # 14. 소형/중형 + 실적 가시성 부족 + 높은 변동성
+    # =========================================================
+
     small_cap_speculative_signal = (
         (
             small_cap
@@ -361,47 +480,68 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
                 and high_volatility
             )
         )
-        and missing_growth_data
+        and (
+            missing_growth_data
+            or negative_profitability
+        )
         and high_volatility
     )
 
+    # =========================================================
+    # 15. 최종 Speculative 판정
+    # =========================================================
     speculative_signal = (
-        emerging_business_signal
-        or emerging_high_risk_signal
+        emerging_unprofitable_signal
+        or emerging_high_growth_low_quality_signal
+        or emerging_extreme_valuation_signal
         or small_cap_speculative_signal
     )
 
     if speculative_signal:
 
         # -----------------------------------------------------
-        # Confidence 계산
-        #
-        # 분류 근거가 여러 개 겹칠수록 confidence를 높인다.
+        # Confidence
         # -----------------------------------------------------
         confidence = 0.72
 
+        evidence_count = 0
+
         if speculative_industry_signal:
-            confidence += 0.05
+            evidence_count += 1
 
         if speculative_keyword_signal:
-            confidence += 0.05
+            evidence_count += 1
 
-        if missing_growth_data:
-            confidence += 0.03
+        if aerospace_industry_signal:
+            evidence_count += 1
+
+        if negative_profitability:
+            evidence_count += 1
+
+        if extreme_valuation_signal:
+            evidence_count += 1
 
         if high_volatility:
-            confidence += 0.03
+            evidence_count += 1
 
         if (
-            speculative_industry_signal
-            and speculative_keyword_signal
+            very_strong_revenue_growth
+            or strong_earnings_growth
         ):
-            confidence += 0.04
+            evidence_count += 1
 
-        confidence = min(confidence, 0.92)
+        # 근거가 여러 개 겹칠수록 confidence 상승
+        if evidence_count >= 4:
+            confidence = 0.90
+        elif evidence_count == 3:
+            confidence = 0.86
+        elif evidence_count == 2:
+            confidence = 0.82
+        elif evidence_count == 1:
+            confidence = 0.78
 
         # -----------------------------------------------------
-        # 분류 이유
+        # 이유 생성
         # -----------------------------------------------------
         reasons = []
 
@@ -410,18 +550,37 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
                 "미래사업 관련 산업군"
             )
 
-        if speculative_keyword_signal:
+        if aerospace_industry_signal:
             reasons.append(
-                "미래사업/신기술 관련 사업 특성"
+                "항공우주 산업"
             )
 
-        if missing_growth_data:
+        if speculative_keyword_signal:
             reasons.append(
-                "성장률 데이터 가시성 부족"
+                "미래사업/신기술 사업 특성"
             )
-        elif weak_growth_data:
+
+        if negative_profitability:
             reasons.append(
-                "성장률이 제한적"
+                "수익성 또는 EPS가 음수"
+            )
+
+        elif weak_profitability:
+            reasons.append(
+                "수익성이 낮음"
+            )
+
+        if extreme_valuation_signal:
+            reasons.append(
+                "높은 밸류에이션"
+            )
+
+        if (
+            very_strong_revenue_growth
+            or strong_earnings_growth
+        ):
+            reasons.append(
+                "높은 성장률"
             )
 
         if high_volatility:
@@ -445,20 +604,16 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             reason,
         )
 
-    # ---------------------------------------------------------
-    # 10. Established Growth
+    # =========================================================
+    # 16. Established Growth
     #
-    # Quality보다 성장성이 투자 논리에서 더 중요한
-    # 대형/성숙 성장주.
-    #
-    # 반드시 Quality보다 먼저 판단한다.
-    # ---------------------------------------------------------
+    # Speculative에서 탈락한 종목만 여기까지 내려온다.
+    # =========================================================
+
     if established_growth_signal:
 
         confidence = 0.84
 
-        # beta가 매우 높으면 분류는 유지하되
-        # confidence를 조금 낮춘다.
         if high_volatility:
             confidence = 0.80
 
@@ -471,12 +626,10 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             "충분한 사업 규모와 뚜렷한 매출 또는 이익 성장성이 확인됨",
         )
 
-    # ---------------------------------------------------------
-    # 11. Quality
-    #
-    # 성장률이 특별히 높지는 않지만 규모와 사업 성숙도가
-    # 장기 보유에 적합한 대형/우량주를 분류한다.
-    # ---------------------------------------------------------
+    # =========================================================
+    # 17. Quality
+    # =========================================================
+
     quality_sectors = {
         "technology",
         "healthcare",
@@ -503,6 +656,11 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             sector in quality_sectors
             or industry in quality_industries
         )
+        and (
+            positive_eps
+            or strong_profitability
+            or return_on_equity is not None
+        )
     )
 
     if quality_signal:
@@ -515,9 +673,10 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             "대형 규모와 성숙한 사업 기반을 갖춘 장기 보유 우량주 특성이 감지됨",
         )
 
-    # ---------------------------------------------------------
-    # 12. General Equity
-    # ---------------------------------------------------------
+    # =========================================================
+    # 18. General Equity
+    # =========================================================
+
     if quote_type in ("equity", "stock", ""):
         return AssetClassification(
             ticker,
@@ -528,9 +687,10 @@ def classify_asset(ticker: str, info: dict[str, Any]) -> AssetClassification:
             "명확한 Quality/Growth/Speculative 분류 근거가 부족함",
         )
 
-    # ---------------------------------------------------------
-    # 13. Unsupported asset
-    # ---------------------------------------------------------
+    # =========================================================
+    # 19. Unsupported asset
+    # =========================================================
+
     return AssetClassification(
         ticker,
         "other",
