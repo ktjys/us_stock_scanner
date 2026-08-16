@@ -381,8 +381,14 @@ def update_returns() -> None:
             to_update.append(updates)
 
     if to_update:
-        db.table("signals").upsert(to_update, on_conflict="id").execute()
-
+    for update in to_update:
+        db.table("signals").update(
+            {
+                key: value
+                for key, value in update.items()
+                if key != "id"
+            }
+        ).eq("id", update["id"]).execute()
 
 def prune_daily_data(days: int = PRUNE_RETENTION_DAYS) -> int:
     """PRUNE_RETENTION_DAYS일보다 오래된 daily_data 행을 삭제하고 개수를 반환한다."""
