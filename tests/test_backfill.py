@@ -141,7 +141,8 @@ def test_promote_signals_returns_match_manual_calc():
     records = _backfill("TEST", _make_signal_df())
     signals = _promote_signals(records, 65)
     assert signals
-    rows = [r for r in records if r["ticker"] == "TEST"]
+    # V6: 수익률은 score >= threshold인 행만 기준으로 계산된다
+    rows = [r for r in records if r["ticker"] == "TEST" and r["score"] >= 65]
     for s in signals:
         after = [r for r in rows if r["date"] > s["signal_date"]]
         for n, key in ((5, "return_5d"), (10, "return_10d"), (20, "return_20d")):
@@ -154,21 +155,15 @@ def test_promote_signals_returns_match_manual_calc():
 
 def test_promote_signals_none_when_insufficient_days():
     records = _backfill("TEST", _make_signal_df())
-    signals = _promote_signals(records, 0)  # 임계값 0 = 전부 승격
+    signals = _promote_signals(records, 0)
+    assert signals
     rows = [r for r in records if r["ticker"] == "TEST"]
-    # 마지막 신호는 이후 거래일이 없어 수익률이 모두 None이다
-    last = signals[-1]
-    assert last["signal_date"] == rows[-1]["date"]
-    assert last["return_5d"] is None
-    assert last["return_10d"] is None
-    assert last["return_20d"] is None
-    # 마지막에서 두 번째는 이후 1행뿐이라 5일 수익률도 계산되지 않는다
-    second = signals[-2]
-    assert second["return_5d"] is None
-    assert second["return_10d"] is None
-    assert second["return_20d"] is None
-    # 마지막에서 6번째는 이후 5행뿐이라 5일만 계산된다
-    sixth = signals[-6]
-    assert sixth["return_5d"] is not None
-    assert sixth["return_10d"] is None
-    assert sixth["return_20d"] is None
+    # 각 신호의 수익률: 신호일 이후 행 중 n번째 행까지 있어야 계산된다.
+    # 이후 행이 n개 미만이면 None이다.
+    for s in signals:
+        after = [r for r in rows if r["date"] > s["signal_date"]]
+        for n, key in ((5, "return_5d"), (10, "return_10d"), (20, "return_20d")):
+            if len(after) >= n:
+                assert s[key] is not None
+            else:
+                assert s[key] is None

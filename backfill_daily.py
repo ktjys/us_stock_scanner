@@ -58,7 +58,7 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
         prev_price = float(close.iloc[i - 1])
         rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
 
-        score, _ = score_signal(
+        score, _, _ = score_signal(
             price, rv, prev, ma20, ma50, dd, vr,
             ma50_prev=ma50_prev, prev_price=prev_price,
             ma20_prev=ma20_prev, relative_strength_5d=rs5,
