@@ -1086,6 +1086,8 @@
         if (v == null || isNaN(v)) tr.appendChild(cell("대기", "neutral"));
         else tr.appendChild(cell(fmtPct(v), pctClass(v)));
       });
+      tr.appendChild(cell(fmtPct(r.benchmark_return), "neutral"));
+      tr.appendChild(cell(fmtPct(r.excess_return), pctClass(r.excess_return)));
       body.appendChild(tr);
     });
   }
