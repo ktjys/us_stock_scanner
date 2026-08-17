@@ -478,7 +478,7 @@ def evaluate_opportunities(date: str | None = None,
             if x is None:
                 continue
             if persist:
-                market_date = x.get("data_date", date)
+                market_date = x.get("data_as_of") or x.get("data_date") or date
                 save_opportunity_score(x, market_date)
                 # V8 spec §8: Decision이 알림 조건일 때만 Signal 생성 (threshold=0으로
                 # V7 ALERT_SCORE 우회 — general OPPORTUNITY는 40점부터 가능).
@@ -519,7 +519,7 @@ def save_daily(x: dict[str, Any], date: str) -> None:
 def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> None:
     if x["score"] < threshold:
         return
-    get_db().table("signals").upsert({
+    payload = {
         "signal_date": date, "ticker": x["ticker"],
         "signal_price": x["price"], "score": x["score"], "score_version": SCORE_VERSION,
         "rsi": x["rsi"], "drawdown": x["drawdown"],
@@ -535,7 +535,14 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         "fundamental_score": x.get("fundamental_score"),
         "valuation_score": x.get("valuation_score"),
         "components": x.get("components"),
-    }, on_conflict="signal_date,ticker").execute()
+    }
+    # V8 Phase 4: 신호 생성 시각 / 시장 데이터 기준일 (있는 경우에만 저장)
+    if x.get("scanned_at") is not None:
+        payload["scanned_at"] = x["scanned_at"]
+    data_as_of = x.get("data_as_of") or x.get("data_date")
+    if data_as_of is not None:
+        payload["data_as_of"] = data_as_of
+    get_db().table("signals").upsert(payload, on_conflict="signal_date,ticker").execute()
 
 
 def save_opportunity_score(x: dict[str, Any], date: str) -> None:
@@ -593,8 +600,8 @@ def _fundamental_incomplete_cb(ticker: str):
     def _cb(missing_fields: list[str], comps: dict[str, int]) -> None:
         log_data_quality(ticker, "fundamental_incomplete", {
             "missing_fields": missing_fields,
-            "valuation_score": comps["valuation"],
-            "profitability_score": comps["profitability"],
+            "valuation_score": comps.get("valuation"),
+            "profitability_score": comps.get("profitability"),
         })
     return _cb
 
@@ -983,18 +990,22 @@ def scan(date: str | None = None,
         return [], []
     db = get_db() if persist else None
     tickers = load_watchlist(db)
+    # 스캔 실행 시각 (scanned_at): 한 스캔 전체에 동일 시각 부여 (data_as_of와 구분)
+    scanned_at = datetime.now(timezone.utc).isoformat()
 
     def _process(ticker: str) -> tuple[str, dict[str, Any] | None, Exception | None]:
         try:
             x = analyze(ticker, date, db)
-            if x and persist:
-                market_date = x.get("data_date", date)
-                save_daily(x, market_date)
-                # V8: opportunity_scores 저장 (모든 종목)
-                save_opportunity_score(x, market_date)
-                # V8: Decision 기반 Signal 생성 (OPPORTUNITY 이상만)
-                if x.get("decision") in _SIGNAL_DECISIONS:
-                    save_signal(x, market_date, threshold=0)
+            if x:
+                x["scanned_at"] = scanned_at
+                if persist:
+                    market_date = x.get("data_as_of") or x.get("data_date") or date
+                    save_daily(x, market_date)
+                    # V8: opportunity_scores 저장 (모든 종목)
+                    save_opportunity_score(x, market_date)
+                    # V8: Decision 기반 Signal 생성 (OPPORTUNITY 이상만)
+                    if x.get("decision") in _SIGNAL_DECISIONS:
+                        save_signal(x, market_date, threshold=0)
             return ticker, x, None
         except Exception as e:
             if db is not None:

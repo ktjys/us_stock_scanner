@@ -21,6 +21,8 @@ from stock_scanner import (ALERT_SCORE, SCORE_VERSION, get_db, load_watchlist,
 from opportunity_engine import (compute_technical_components, opportunity_score,
                                 risk_score, signal_confidence)
 
+import json as _json
+
 RET_HORIZONS = (5, 10, 20)
 DEFAULT_THRESHOLDS = "80,75,70,65,60,55,50,45,40"
 SCORE_BANDS = [(40,44),(45,49),(50,54),(55,59),(60,64),(65,69),(70,74),(75,79),(80,100)]
@@ -51,6 +53,67 @@ def _get_db_if_available() -> Any:
         except Exception as e:  # noqa: BLE001 - 인증 실패 등은 CSV로 폴백
             print(f"경고: DB 연결 실패, CSV로 대체 - {e}", file=sys.stderr)
     return None
+
+
+def _load_historical_classification(
+    ticker: str,
+    signal_date: str,
+    db: Any,
+) -> dict | None:
+    """historical_classification 테이블에서 given date의 스냅샷을 조회한다.
+
+    없으면 current classification을 반환(fallback)한다.
+    """
+    if db is None:
+        return None
+    try:
+        row = db.execute(
+            """
+            SELECT strategy_type, confidence, source
+            FROM historical_classification
+            WHERE ticker = %s AND effective_date <= %s
+            ORDER BY effective_date DESC
+            LIMIT 1
+            """,
+            (ticker, signal_date),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "strategy_type": row[0],
+            "confidence": row[1],
+            "source": row[2],
+        }
+    except Exception:
+        return None
+
+
+def _load_historical_fundamental(
+    ticker: str,
+    signal_date: str,
+    db: Any,
+) -> dict | None:
+    """historical_fundamental 테이블에서 signal_date 이전에 사용 가능한
+    fundamental 데이터를 jsonb로 반환한다. 없으면 None을 반환한다.
+    """
+    if db is None:
+        return None
+    try:
+        row = db.execute(
+            """
+            SELECT data
+            FROM historical_fundamental
+            WHERE ticker = %s AND available_date <= %s
+            ORDER BY available_date DESC
+            LIMIT 1
+            """,
+            (ticker, signal_date),
+        ).fetchone()
+        if row is None:
+            return None
+        return _json.loads(row[0])
+    except Exception:
+        return None
 
 
 def _load_tickers(tickers_arg: str | None, db: Any | None = None) -> list[str]:
@@ -101,7 +164,8 @@ def _future_metrics(df: pd.DataFrame, idx: int) -> dict[int, dict[str, float | N
 def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
                      start: str, end: str,
                      market_df: pd.DataFrame | None = None,
-                     mode: str = "v7", strategy: str = "general") -> list[dict]:
+                     mode: str = "v7", strategy: str = "general",
+                     db: Any | None = None) -> list[dict]:
     """한 ticker를 행 단위로 순회한다.
 
     thresholds의 최소값 이상인 점수만 기록하되, 한 날짜에는 한 건만 기록한다.
@@ -111,6 +175,15 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
     df = _compute_indicators(df)
     if df.empty:
         return []
+
+    # --- historical data loading (Phase 6) ---
+    # db가 있으면 시점별 classification/fundamental 스냅샷을 우선 사용
+    _h_class = None
+    _h_fund = None
+    if db is not None:
+        _h_class = _load_historical_classification(ticker, str(df.index[i].date()), db)
+        _h_fund = _load_historical_fundamental(ticker, str(df.index[i].date()), db)
+    # ------------------------------------------
 
     idx = df.index
     if idx.tz is not None:
@@ -405,6 +478,88 @@ def _summarize_by_strategy(records: list[dict]) -> dict[str, list[dict]]:
 def _summarize_by_risk(records: list[dict]) -> dict[str, list[dict]]:
     """리스크 등급별 점수구간 요약 (risk_level 없음 = UNKNOWN)."""
     return _group_band_summaries(records, "risk_level", "UNKNOWN")
+
+
+def walk_forward_validation(
+    df: pd.DataFrame,
+    market_df: pd.DataFrame,
+    train_window: int = 252,
+    test_window: int = 63,
+    thresholds: list[int] | None = None,
+    strategy: str = "general",
+) -> list[dict]:
+    """Walk-forward validation: train on train_window, test on test_window,
+    slide forward by test_window.
+
+    Returns list of dicts with train/test period info and performance metrics.
+    """
+    if thresholds is None:
+        thresholds = [40, 45, 50, 55, 60, 65, 70, 75, 80]
+
+    df = _compute_indicators(df)
+    if df.empty:
+        return []
+
+    idx = df.index
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+
+    rs_series = _relative_strength_series(df, market_df)
+    min_score = min(thresholds)
+
+    results: list[dict] = []
+    n = len(df)
+
+    start_idx = train_window
+    while start_idx + test_window < n:
+        train_end = start_idx
+        test_start = train_end
+        test_end = min(test_start + test_window, n)
+
+        train_df = df.iloc[:train_end]
+        test_df = df.iloc[test_start:test_end]
+        test_market_df = market_df.iloc[test_start:test_end] if len(market_df) > test_start else pd.DataFrame()
+
+        if len(test_df) < 3:
+            break
+
+        # Run backtest on test window
+        test_records = _backtest_ticker(
+            "WALK_FWD", test_df, thresholds,
+            str(test_df.index[0].date()), str(test_df.index[-1].date()),
+            test_market_df, mode="v8", strategy=strategy
+        )
+
+        # Aggregate performance
+        if test_records:
+            ret5_vals = [r["ret5"] for r in test_records if r["ret5"] is not None]
+            ret10_vals = [r["ret10"] for r in test_records if r["ret10"] is not None]
+            ret20_vals = [r["ret20"] for r in test_records if r["ret20"] is not None]
+
+            win5 = sum(1 for v in ret5_vals if v > 0) / len(ret5_vals) * 100 if ret5_vals else None
+            avg5 = sum(ret5_vals) / len(ret5_vals) if ret5_vals else None
+            avg10 = sum(ret10_vals) / len(ret10_vals) if ret10_vals else None
+            avg20 = sum(ret20_vals) / len(ret20_vals) if ret20_vals else None
+        else:
+            win5 = avg5 = avg10 = avg20 = None
+
+        results.append({
+            "train_start": str(train_df.index[0].date()),
+            "train_end": str(train_df.index[-1].date()),
+            "test_start": str(test_df.index[0].date()),
+            "test_end": str(test_df.index[-1].date()),
+            "train_days": len(train_df),
+            "test_days": len(test_df),
+            "signals": len(test_records),
+            "win_rate_5d": win5,
+            "avg_ret_5d": avg5,
+            "avg_ret_10d": avg10,
+            "avg_ret_20d": avg20,
+        })
+
+        start_idx += test_window
+
+    return results
 
 
 def build_backtest_summary(weeks: int = 26, tickers: str | None = None,

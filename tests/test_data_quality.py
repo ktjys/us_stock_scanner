@@ -198,8 +198,8 @@ def test_compute_signal_v8_logs_fundamental_incomplete(monkeypatch):
     assert x is not None
     assert logged == [("AAPL", "fundamental_incomplete", {
         "missing_fields": ["trailingPE", "profitMargins"],
-        "valuation_score": 0,
-        "profitability_score": 0,
+        "valuation_score": None,
+        "profitability_score": None,
     })]
 
 

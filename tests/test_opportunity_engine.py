@@ -168,7 +168,7 @@ def test_fundamental_components_tiers():
     assert compute_fundamental_components(
         {"trailingPE": 15, "priceToSalesTrailing12Months": 25})["valuation"] == 0
     # float 변환 실패 → 0
-    assert compute_fundamental_components({"trailingPE": "abc"})["valuation"] == 0
+    assert "valuation" not in compute_fundamental_components({"trailingPE": "abc"})
 
     # profitability 티어
     assert compute_fundamental_components({"profitMargins": 0.15})["profitability"] == 10
@@ -188,9 +188,8 @@ def test_fundamental_components_tiers():
     assert compute_fundamental_components({"earningsGrowth": 0.05})["earnings"] == 4
     assert compute_fundamental_components({"earningsGrowth": -0.1})["earnings"] == 0
 
-    # info=None → 전부 0
-    assert compute_fundamental_components(None) == {
-        "valuation": 0, "profitability": 0, "dividend": 0, "earnings": 0}
+    # info=None → 데이터 없음 (no data, not 0 points)
+    assert compute_fundamental_components(None) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +206,7 @@ def test_fundamental_components_quality_callback_fires_on_missing_key_fields():
     assert len(calls) == 1
     missing, comps = calls[0]
     assert missing == ["trailingPE", "profitMargins", "earningsGrowth"]
-    assert comps == {"valuation": 0, "profitability": 0, "dividend": 10, "earnings": 0}
+    assert comps == {"dividend": 10}
 
 
 def test_fundamental_components_quality_callback_silent_when_all_fields_present():
@@ -393,3 +392,33 @@ def test_sub_scores_half_scores_round_to_50():
     assert subs["momentum_score"] == 50
     assert subs["fundamental_score"] == 50
     assert subs["valuation_score"] == 50
+
+
+def test_component_correlation():
+    """Verify technical and momentum components are independently weighted.
+
+    Technical components (rsi_state..volume) and momentum components
+    (relative_strength, momentum_20d, breakout) are weighted separately
+    by STRATEGY_WEIGHTS. When only technical components are present,
+    technical_score should be computed and momentum_score should be None.
+    """
+    # Only technical components present (no momentum components)
+    comps = {
+        "rsi_state": 20, "rsi_rebound": 15, "price_rebound": 15, "drawdown": 15,
+        "ma20": 15, "trend": 5, "volume": 5,
+    }
+    subs = component_sub_scores(comps)
+    # Technical score: all 7 tech components present, maxed out
+    assert subs["technical_score"] == 100
+    # No momentum components → None
+    assert subs["momentum_score"] is None
+
+    # Only momentum components present (no technical)
+    comps2 = {
+        "relative_strength": 10, "momentum_20d": 10, "breakout": 10,
+    }
+    subs2 = component_sub_scores(comps2)
+    # No technical components → None
+    assert subs2["technical_score"] is None
+    # Momentum score: all 3 present at max
+    assert subs2["momentum_score"] == 100
