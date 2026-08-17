@@ -420,10 +420,10 @@ def resolve_strategy(ticker: str, db: Any | None = None,
 
 def analyze(ticker: str, date: str | None = None,
             db: Any | None = None) -> dict[str, Any] | None:
-    """ticker의 데이터를 받아 V7 신호를 계산한다.
+    """ticker의 데이터를 받아 V8 신호를 계산한다.
 
-    Yahoo 가격 데이터를 받아 V7 반등확인형 스코어를 산출한다.
-    V8 Opportunity Engine 평가(전 watchlist)는 evaluate_opportunities()가 담당한다.
+    Yahoo 가격 데이터를 받아 V8 전략별 Opportunity Score를 산출한다.
+    V7 compute_signal()은 backtest 비교용으로만 유지된다.
     """
     df = fetch_history(ticker)
     if df.empty:
@@ -443,7 +443,7 @@ def analyze(ticker: str, date: str | None = None,
             return None
     info = fetch_info(ticker)
     strategy, cconf = resolve_strategy(ticker, db, info)
-    return compute_signal(ticker, df, _market_history())
+    return compute_signal_v8(ticker, df, _market_history(), strategy, info, cconf)
 
 
 def evaluate_opportunities(date: str | None = None,
@@ -766,17 +766,21 @@ def is_us_market_holiday(d: date) -> bool:
 
 
 def build_alert_message(candidates: list[dict[str, Any]], date: str) -> str:
-    """후보 목록을 스코어 내림차순으로 정렬해 텔레그램 메시지로 포맷한다."""
-    ordered = sorted(candidates, key=lambda x: x["score"], reverse=True)
-    msg = f"📊 미국주식 매수 후보\n📅 {date}\n\n"
+    """후보 목록을 V8 기준으로 포맷해 텔레그램 메시지로 반환한다."""
+    ordered = sorted(candidates, key=lambda x: x.get("opportunity_score", x.get("score", 0)), reverse=True)
+    msg = f"📊 미국주식 매수 후보 (V8)\n📅 {date}\n\n"
     for x in ordered:
-        msg += (f"{'🔥' if x['score'] >= 80 else '🟢'} {x['ticker']} "
-                f"{x['score']}점\n"
+        decision = x.get("decision", "WATCH")
+        emoji = _DECISION_EMOJI.get(decision, "❔")
+        strategy = _STRATEGY_LABELS.get(x.get("strategy_type", "general"), "일반")
+        score = x.get("opportunity_score", x.get("score", 0))
+        risk = x.get("risk_level", "-")
+        conf = x.get("signal_confidence", 0)
+        msg += (f"{emoji} {x['ticker']} [{decision}]\n"
+                f"전략: {strategy} | 리스크: {risk}\n"
+                f"기회점수: {score} | 신뢰도: {conf:.2f}\n"
                 f"가격 ${x['price']:.2f} | RSI {x['rsi']:.1f}\n"
-                f"전략: {x.get('strategy_type', 'general')} | "
-                f"Risk: {x.get('risk_level', '-')}\n"
-                f"고점대비 {x['drawdown']:.1f}%\n"
-                f"조건: {', '.join(x['conditions'])}\n\n")
+                f"고점대비 {x['drawdown']:.1f}%\n\n")
     return msg
 
 

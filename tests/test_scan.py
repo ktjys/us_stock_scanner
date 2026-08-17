@@ -5,19 +5,26 @@ from stock_scanner import build_alert_message, scan
 
 def test_build_alert_message_sorted_and_formatted():
     cands = [
-        {"ticker": "B", "score": 70, "price": 99.5, "rsi": 32.0,
-         "drawdown": -11.0, "conditions": ["RSI<35 과매도", "고점대비-10%"]},
-        {"ticker": "A", "score": 85, "price": 123.45, "rsi": 28.0,
-         "drawdown": -20.0, "conditions": ["RSI<35 과매도"]},
+        {"ticker": "B", "score": 70, "opportunity_score": 70, "price": 99.5, "rsi": 32.0,
+         "drawdown": -11.0, "risk_level": "MEDIUM", "signal_confidence": 0.82,
+         "strategy_type": "established_growth", "decision": "OPPORTUNITY",
+         "conditions": ["RSI<35 과매도", "고점대비-10%"]},
+        {"ticker": "A", "score": 85, "opportunity_score": 85, "price": 123.45, "rsi": 28.0,
+         "drawdown": -20.0, "risk_level": "LOW", "signal_confidence": 0.91,
+         "strategy_type": "quality", "decision": "STRONG_OPPORTUNITY",
+         "conditions": ["RSI<35 과매도"]},
     ]
     msg = build_alert_message(cands, "2026-08-13")
     assert "📅 2026-08-13" in msg
-    assert "🔥 A 85점" in msg
-    assert "🟢 B 70점" in msg
+    assert "STRONG_OPPORTUNITY" in msg
+    assert "OPPORTUNITY" in msg
+    assert "전략: 우량주" in msg
+    assert "전략: 성장주" in msg
+    assert "기회점수: 85" in msg
+    assert "리스크: LOW" in msg
     assert "가격 $123.45" in msg
     assert "고점대비 -20.0%" in msg
-    assert "조건: RSI<35 과매도, 고점대비-10%" in msg
-    assert msg.index("🔥 A") < msg.index("🟢 B")
+    assert msg.index("STRONG_OPPORTUNITY") < msg.index("OPPORTUNITY")
 
 
 def test_scan_no_db_no_notify_returns_candidates(monkeypatch):

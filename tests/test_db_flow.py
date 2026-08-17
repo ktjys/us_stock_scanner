@@ -367,6 +367,12 @@ def test_analyze_recent_data_returns_signal(monkeypatch):
     monkeypatch.setattr("stock_scanner.fetch_info", lambda t: None)
     monkeypatch.setattr("stock_scanner.resolve_strategy",
                         lambda t, db=None, info=None: ("general", 0.5))
-    monkeypatch.setattr("stock_scanner.compute_signal",
-                        lambda t, d, m: {"ticker": t, "score": 80})
-    assert analyze("AAPL") == {"ticker": "AAPL", "score": 80}
+    monkeypatch.setattr("stock_scanner.compute_signal_v8",
+                        lambda t, d, m, s, i, c: {"ticker": t, "score": 80,
+                                                    "opportunity_score": 80,
+                                                    "risk_level": "MEDIUM",
+                                                    "decision": "OPPORTUNITY"})
+    result = analyze("AAPL")
+    assert result["ticker"] == "AAPL"
+    assert result["score"] == 80
+    assert result["decision"] == "OPPORTUNITY"
