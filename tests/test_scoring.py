@@ -135,7 +135,7 @@ class _FakeQuery:
     def __init__(self, rows):
         self._rows = rows
 
-    def select(self, *cols):
+    def select(self, *args):
         return self
 
     def in_(self, col, vals):
@@ -145,6 +145,9 @@ class _FakeQuery:
         return self
 
     def lt(self, col, val):
+        return self
+
+    def order(self, col, desc=False):
         return self
 
     def execute(self):
@@ -164,17 +167,43 @@ class _FakeDb:
         return _FakeQuery(self._rows)
 
 
-def test_recent_alert_tickers_returns_alerted_set():
-    db = _FakeDb([{"ticker": "AAPL"}, {"ticker": "NVDA"}])
+def test_recent_alert_tickers_returns_alerted_dict():
+    db = _FakeDb([{"ticker": "AAPL", "score": 65, "decision": "WATCH", "signal_date": "2026-08-10"},
+                  {"ticker": "NVDA", "score": 70, "decision": "OPPORTUNITY", "signal_date": "2026-08-11"}])
     recent = recent_alert_tickers(db, "2026-08-13", ["AAPL", "MSFT", "NVDA"])
-    assert recent == {"AAPL", "NVDA"}
+    assert set(recent.keys()) == {"AAPL", "NVDA"}
+    assert recent["AAPL"]["score"] == 65
+    assert recent["NVDA"]["decision"] == "OPPORTUNITY"
 
 
 def test_recent_alert_tickers_empty_input():
-    assert recent_alert_tickers(_FakeDb([]), "2026-08-13", []) == set()
+    assert recent_alert_tickers(_FakeDb([]), "2026-08-13", []) == {}
 
 
 def test_filter_recent_alerts_drops_recent_tickers():
-    cands = [{"ticker": "AAPL", "score": 70}, {"ticker": "MSFT", "score": 66}]
-    out = filter_recent_alerts(cands, {"AAPL"})
+    cands = [{"ticker": "AAPL", "score": 70, "decision": "OPPORTUNITY"},
+             {"ticker": "MSFT", "score": 66, "decision": "WATCH"}]
+    recent = {"AAPL": {"score": 69, "decision": "OPPORTUNITY", "signal_date": "2026-08-10"}}
+    out = filter_recent_alerts(cands, recent)
     assert [c["ticker"] for c in out] == ["MSFT"]
+
+
+def test_filter_recent_alerts_allows_decision_improvement():
+    cands = [{"ticker": "AAPL", "score": 75, "decision": "STRONG_OPPORTUNITY"}]
+    recent = {"AAPL": {"score": 70, "decision": "OPPORTUNITY", "signal_date": "2026-08-10"}}
+    out = filter_recent_alerts(cands, recent)
+    assert [c["ticker"] for c in out] == ["AAPL"]
+
+
+def test_filter_recent_alerts_allows_score_improvement():
+    cands = [{"ticker": "AAPL", "score": 85, "decision": "OPPORTUNITY"}]
+    recent = {"AAPL": {"score": 65, "decision": "OPPORTUNITY", "signal_date": "2026-08-10"}}
+    out = filter_recent_alerts(cands, recent)
+    assert [c["ticker"] for c in out] == ["AAPL"]
+
+
+def test_filter_recent_alerts_blocks_same_level():
+    cands = [{"ticker": "AAPL", "score": 70, "decision": "OPPORTUNITY"}]
+    recent = {"AAPL": {"score": 68, "decision": "OPPORTUNITY", "signal_date": "2026-08-10"}}
+    out = filter_recent_alerts(cands, recent)
+    assert [c["ticker"] for c in out] == []

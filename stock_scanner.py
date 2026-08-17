@@ -314,6 +314,10 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
 
     opportunity_engine의 전략별 가중치로 opportunity_score를 산출하고
     risk_level/신뢰도를 함께 반환한다. V7 compute_signal()은 그대로 유지된다.
+
+    펀더멘털 info가 부분 결측이면 _fundamental_incomplete_cb가
+    log_data_quality("fundamental_incomplete")를 best-effort로 기록한다
+    (로깅 실패는 결과에 영향을 주지 않는다).
     """
     if df.empty:
         return None
@@ -348,7 +352,8 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
 
     i = len(df) - 1
     comps = compute_technical_components(df, i, market_df)
-    comps.update(compute_fundamental_components(info))
+    comps.update(compute_fundamental_components(
+        info, quality_callback=_fundamental_incomplete_cb(ticker)))
     oscore = opportunity_score(comps, strategy)
     rscore, rlevel = risk_score(df, i, info)
     conf = signal_confidence(oscore)
@@ -442,6 +447,8 @@ def analyze(ticker: str, date: str | None = None,
                                  {"age_days": age, "last_date": str(last.date())})
             return None
     info = fetch_info(ticker)
+    if info is None and db is not None:
+        log_data_quality(ticker, "fundamental_null", {"reason": "info_is_none"})
     strategy, cconf = resolve_strategy(ticker, db, info)
     return compute_signal_v8(ticker, df, _market_history(), strategy, info, cconf)
 
@@ -464,6 +471,8 @@ def evaluate_opportunities(date: str | None = None,
             if df.empty:
                 continue
             info = fetch_info(ticker)
+            if info is None and db is not None:
+                log_data_quality(ticker, "fundamental_null", {"reason": "info_is_none"})
             strategy, cconf = resolve_strategy(ticker, db, info)
             x = compute_signal_v8(ticker, df, _market_history(), strategy, info, cconf)
             if x is None:
@@ -576,10 +585,28 @@ def finish_run(run_id: int, stats: dict[str, Any]) -> None:
     }).eq("id", run_id).execute()
 
 
+def _fundamental_incomplete_cb(ticker: str):
+    """compute_fundamental_components용 quality_callback 생성 (ticker 캡처).
+
+    핵심 펀더멘털 필드 결측을 log_data_quality("fundamental_incomplete")로 기록한다.
+    """
+    def _cb(missing_fields: list[str], comps: dict[str, int]) -> None:
+        log_data_quality(ticker, "fundamental_incomplete", {
+            "missing_fields": missing_fields,
+            "valuation_score": comps["valuation"],
+            "profitability_score": comps["profitability"],
+        })
+    return _cb
+
+
 def log_data_quality(ticker: str, issue_type: str, details: dict | None = None) -> None:
     """데이터 품질 이슈를 data_quality_log 테이블에 기록한다 (best-effort).
 
     issue_type: "api_failure" | "stale_data" | "missing_price" | "calculation_error"
+                | "fundamental_null" | "fundamental_incomplete"
+    fundamental_null: fetch_info()가 None을 반환해 펀더멘털 데이터가 아예 없음.
+    fundamental_incomplete: key 필드(trailingPE/profitMargins/dividendYield/
+    earningsGrowth) 일부가 결측되어 펀더멘털 컴포넌트가 대부분 0점.
     logged_at은 Supabase 서버 타임스탬프(now())를 사용한다.
     로깅 실패는 스캔 파이프라인을 중단시키지 않는다.
     """
@@ -613,7 +640,11 @@ def _fetch_all(query, page_size: int = 1000) -> list[dict[str, Any]]:
 
 
 def update_returns() -> None:
-    """미완료 신호(return_20d가 비어 있음)의 5/10/20일 수익률을 갱신한다."""
+    """미완료 신호(return_20d가 비어 있음)의 5/10/20일 수익률을 갱신한다.
+
+    추가로 exit_price, holding_days, benchmark_return, excess_return,
+    max_drawdown_after, max_runup_after를 계산한다.
+    """
     db = get_db()
     signals = _fetch_all(db.table("signals").select("*").is_("return_20d", None))
     if not signals:
@@ -621,6 +652,8 @@ def update_returns() -> None:
 
     tickers = {s["ticker"] for s in signals}
     min_date = min(_date_key(s["signal_date"]) for s in signals)
+
+    # 종목 데이터 조회
     rows = _fetch_all(db.table("daily_data")
                       .select("date,ticker,price")
                       .in_("ticker", list(tickers))
@@ -631,14 +664,60 @@ def update_returns() -> None:
     for r in rows:
         by_ticker[r["ticker"]].append(r)
 
+    # 벤치마크(SPY) 데이터 조회
+    spy_rows = _fetch_all(db.table("daily_data")
+                          .select("date,price")
+                          .eq("ticker", "SPY")
+                          .gte("date", min_date)
+                          .order("date"))
+    spy_by_date: dict[str, float] = {
+        _date_key(r["date"]): r["price"] for r in spy_rows
+    }
+
     to_update: list[dict[str, Any]] = []
     for s in signals:
         series = by_ticker.get(s["ticker"], [])
-        after = [r for r in series if _date_key(r["date"]) > _date_key(s["signal_date"])]
+        signal_date = _date_key(s["signal_date"])
+        signal_price = s.get("signal_price")
+
+        if not signal_price:
+            continue
+
+        after = [r for r in series if _date_key(r["date"]) > signal_date]
         updates: dict[str, Any] = {}
+
+        # 5/10/20일 수익률
         for n, key in [(5, "return_5d"), (10, "return_10d"), (20, "return_20d")]:
-            if len(after) >= n and s.get("signal_price"):
-                updates[key] = (after[n - 1]["price"] / s["signal_price"] - 1) * 100
+            if len(after) >= n:
+                updates[key] = (after[n - 1]["price"] / signal_price - 1) * 100
+
+        # exit_price: 20일 후 가격 (없으면 마지막-available)
+        if len(after) >= 20:
+            updates["exit_price"] = after[19]["price"]
+            updates["holding_days"] = 20
+        elif after:
+            updates["exit_price"] = after[-1]["price"]
+            updates["holding_days"] = len(after)
+
+        # benchmark_return: SPY 동일 기간 수익률
+        if len(after) >= 5:
+            spy_start = spy_by_date.get(signal_date)
+            spy_end = spy_by_date.get(_date_key(after[4]["date"]))
+            if spy_start and spy_end:
+                updates["benchmark_return"] = (spy_end / spy_start - 1) * 100
+
+        # excess_return: 종목 수익률 - 벤치마크 수익률
+        if "return_5d" in updates and "benchmark_return" in updates:
+            updates["excess_return"] = updates["return_5d"] - updates["benchmark_return"]
+
+        # max_drawdown_after / max_runup_after: 신호 후 20일 내 최대 낙폭/상승폭
+        if after:
+            prices = [r["price"] for r in after[:20]]
+            min_price = min(prices)
+            max_price = max(prices)
+            updates["max_drawdown_after"] = (min_price / signal_price - 1) * 100
+            updates["max_runup_after"] = (max_price / signal_price - 1) * 100
+
         if updates:
             updates["id"] = s["id"]
             to_update.append(updates)
@@ -678,25 +757,70 @@ def telegram(msg: str) -> None:
     r.raise_for_status()
 
 
-def recent_alert_tickers(db: Any, date: str, tickers: list[str]) -> set[str]:
-    """ALERT_COOLDOWN_DAYS 이내에 이미 신호가 저장된 ticker 집합 (당일 제외)."""
+def recent_alert_tickers(db: Any, date: str, tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """ALERT_COOLDOWN_DAYS 이내에 이미 신호가 저장된 ticker의 최근 신호 정보를 반환한다.
+
+    Returns:
+        {ticker: {"score": int, "decision": str, "signal_date": str}}
+    """
     if not tickers:
-        return set()
+        return {}
     since = (datetime.strptime(date, "%Y-%m-%d")
              - timedelta(days=ALERT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
     rows = (db.table("signals")
-            .select("ticker")
+            .select("ticker", "score", "decision", "signal_date")
             .in_("ticker", tickers)
             .gte("signal_date", since)
             .lt("signal_date", date)
+            .order("signal_date", desc=True)
             .execute().data or [])
-    return {r["ticker"] for r in rows}
+    # ticker별 최신 신호만 유지
+    result: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        ticker = r["ticker"]
+        if ticker not in result:
+            result[ticker] = r
+    return result
+
+
+# Decision 우선순위 (높을수록 좋음)
+_DECISION_RANK: dict[str, int] = {
+    Decision.STRONG_OPPORTUNITY: 4,
+    Decision.OPPORTUNITY: 3,
+    Decision.WATCH: 2,
+    Decision.NEUTRAL: 1,
+    Decision.AVOID: 0,
+}
+
+# 점수 상승 임계값: 이만큼 상승하면 재알림 허용
+SCORE_IMPROVEMENT_THRESHOLD = 15
 
 
 def filter_recent_alerts(candidates: list[dict[str, Any]],
-                         recent_tickers: set[str]) -> list[dict[str, Any]]:
-    """최근에 알림을 보낸 ticker를 후보에서 제외한다."""
-    return [c for c in candidates if c["ticker"] not in recent_tickers]
+                         recent_alerts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """최근 알림 이력을 기반으로 후보를 필터링한다.
+
+    재알림 조건 (ALERT_COOLDOWN_DAYS 내라도):
+      1. Decision이 상승했을 때 (예: WATCH → OPPORTUNITY)
+      2. 점수가 SCORE_IMPROVEMENT_THRESHOLD 이상 상승했을 때
+    """
+    filtered: list[dict[str, Any]] = []
+    for c in candidates:
+        ticker = c["ticker"]
+        if ticker not in recent_alerts:
+            filtered.append(c)
+            continue
+
+        prev = recent_alerts[ticker]
+        prev_rank = _DECISION_RANK.get(prev.get("decision", "WATCH"), 0)
+        curr_rank = _DECISION_RANK.get(c.get("decision", "WATCH"), 0)
+        prev_score = prev.get("score", 0)
+        curr_score = c.get("score", c.get("opportunity_score", 0))
+
+        if curr_rank > prev_rank or curr_score - prev_score >= SCORE_IMPROVEMENT_THRESHOLD:
+            filtered.append(c)
+            continue
+    return filtered
 
 
 # ---------------------------------------------------------------------------

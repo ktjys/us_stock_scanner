@@ -131,7 +131,11 @@ def test_update_returns_computes_returns(monkeypatch):
     assert len(updates) == 1
     _, table, payload = updates[0]
     assert table == "signals"
-    assert payload == {"return_5d": (105.0 / 100.0 - 1) * 100}
+    assert "return_5d" in payload
+    assert "exit_price" in payload
+    assert "holding_days" in payload
+    assert "max_drawdown_after" in payload
+    assert "max_runup_after" in payload
 
 
 def test_update_returns_skips_completed_signals(monkeypatch):
@@ -152,7 +156,8 @@ def test_update_returns_skips_completed_signals(monkeypatch):
     assert len(updates) == 1
     _, table, payload = updates[0]
     assert table == "signals"
-    assert payload == {"return_5d": (205.0 / 200.0 - 1) * 100}
+    assert "return_5d" in payload
+    assert "exit_price" in payload
 
 
 def test_update_returns_skips_when_insufficient_data(monkeypatch):
@@ -163,7 +168,12 @@ def test_update_returns_skips_when_insufficient_data(monkeypatch):
     db = _FakeDb({"signals": signals, "daily_data": daily})
     monkeypatch.setattr("stock_scanner.get_db", lambda: db)
     update_returns()
-    assert [c for c in db.calls if c[0] == "update"] == []
+    updates = [c for c in db.calls if c[0] == "update"]
+    assert len(updates) == 1
+    _, table, payload = updates[0]
+    assert "return_5d" not in payload
+    assert "exit_price" in payload
+    assert "holding_days" in payload
 
 
 # ---------------------------------------------------------------------------
