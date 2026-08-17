@@ -35,6 +35,10 @@ SCAN_WORKERS = 8  # 종목별 병렬 분석 워커 수 (Yahoo 스로틀링을 �
 _db: Any = None
 _db_lock = threading.Lock()
 
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+_session = requests.Session()
+_session.headers["User-Agent"] = _UA
+
 
 def get_db() -> Any:
     """지연 초기화되는 Supabase 클라이언트 (import 시 env 변수 불필요)."""
@@ -88,7 +92,7 @@ def fetch_history(ticker: str, retries: int = 3, backoff: float = 2.0) -> pd.Dat
     for attempt in range(retries):
         try:
             df = yf.download(ticker, period="1y", interval="1d",
-                             auto_adjust=True, progress=False)
+                             auto_adjust=True, progress=False, session=_session)
             if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df
@@ -372,7 +376,7 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
 def fetch_info(ticker: str) -> dict | None:
     """Yahoo Finance 메타데이터를 best-effort로 조회한다 (실패 시 None)."""
     try:
-        info = yf.Ticker(ticker).info
+        info = yf.Ticker(ticker, session=_session).info
         return info if info else None
     except Exception:  # noqa: BLE001 - 메타데이터 부재는 스코어링에 치명적이지 않음
         return None

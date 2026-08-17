@@ -145,8 +145,8 @@ def test_promote_signals_returns_match_manual_calc():
     records = _backfill("TEST", _make_signal_df())
     signals = _promote_signals(records, 65)
     assert signals
-    # V6: 수익률은 score >= threshold인 행만 기준으로 계산된다
-    rows = [r for r in records if r["ticker"] == "TEST" and r["score"] >= 65]
+    # V8: 수익률은 ALL daily_data 행을 기준으로 계산된다 (고득점 행만 비교하면 실제 거래일 수익률과 달라짐)
+    rows = [r for r in records if r["ticker"] == "TEST"]
     for s in signals:
         after = [r for r in rows if r["date"] > s["signal_date"]]
         for n, key in ((5, "return_5d"), (10, "return_10d"), (20, "return_20d")):

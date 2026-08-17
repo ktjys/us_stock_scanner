@@ -1,4 +1,4 @@
-yfinance>=1.5,<2
+yfinance>=1.6,<2
 pandas>=2.0,<4
 requests>=2.31,<3
 supabase>=2.0,<3
