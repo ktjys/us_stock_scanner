@@ -866,7 +866,11 @@ def scan(date: str | None = None,
             if x and persist:
                 market_date = x.get("data_date", date)
                 save_daily(x, market_date)
-                save_signal(x, market_date, threshold)
+                # V8: opportunity_scores 저장 (모든 종목)
+                save_opportunity_score(x, market_date)
+                # V8: Decision 기반 Signal 생성 (OPPORTUNITY 이상만)
+                if x.get("decision") in _SIGNAL_DECISIONS:
+                    save_signal(x, market_date, threshold=0)
             return ticker, x, None
         except Exception as e:
             if db is not None:
@@ -921,7 +925,6 @@ def main() -> None:
     run_id = start_run()
     try:
         candidates, failures = scan(threshold=args.threshold)
-        evaluate_opportunities()
         total = len(load_watchlist(get_db()))
         stats = {
             "total": total,
