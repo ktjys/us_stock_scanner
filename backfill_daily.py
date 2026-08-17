@@ -29,6 +29,12 @@ OPPORTUNITY_SCORE_COLUMNS = ("date", "ticker", "strategy_type", "opportunity_sco
                              "classification_confidence", "technical_score",
                              "momentum_score", "fundamental_score", "valuation_score",
                              "components")
+# daily_data 테이블 컬럼 (stock_scanner.save_daily 과 동일, PK date,ticker,score_version)
+DAILY_DATA_COLUMNS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
+                      "drawdown", "volume_ratio", "relative_strength_5d", "score",
+                      "score_version", "strategy_type", "opportunity_score",
+                      "risk_level", "technical_score", "momentum_score",
+                      "fundamental_score", "valuation_score", "components")
 
 
 def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
@@ -203,14 +209,12 @@ def _run_backfill(weeks: int, tickers: list[str],
 
 
 def _upsert_batches(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -> None:
-    """opportunity_scores PK(date,ticker) 기준 upsert를 배치 단위로 실행한다.
-
-    records에는 daily_data 전용 필드(score_version 등)도 섞여 있으므로
-    opportunity_scores 컬럼만 추려 보낸다.
-    """
     for i in range(0, len(rows), batch_size):
-        batch = [{k: r[k] for k in OPPORTUNITY_SCORE_COLUMNS} for r in rows[i:i + batch_size]]
-        db.table("opportunity_scores").upsert(batch, on_conflict="date,ticker").execute()
+        chunk = rows[i:i + batch_size]
+        opp_batch = [{k: r[k] for k in OPPORTUNITY_SCORE_COLUMNS} for r in chunk]
+        db.table("opportunity_scores").upsert(opp_batch, on_conflict="date,ticker").execute()
+        dd_batch = [{k: r[k] for k in DAILY_DATA_COLUMNS} for r in chunk]
+        db.table("daily_data").upsert(dd_batch, on_conflict="date,ticker").execute()
 
 
 def main() -> None:
