@@ -211,6 +211,7 @@
     bindDetailControls();
     bindSignalsControls();
     bindScoreboardControls();
+    bindWatchlistControls();
 
     if (sb) {
       loadWatchlist()
@@ -278,8 +279,9 @@
     $("tabs").querySelectorAll(".tab-btn").forEach(function (b) {
       b.classList.toggle("active", b.getAttribute("data-screen") === screen);
     });
-    ["status", "scoreboard", "detail", "signals", "backtest", "heatmap"].forEach(function (s) {
-      $("screen-" + s).classList.toggle("hidden", s !== screen);
+    ["status", "scoreboard", "detail", "signals", "backtest", "heatmap", "watchlist", "settings"].forEach(function (s) {
+      var el = $("screen-" + s);
+      if (el) el.classList.toggle("hidden", s !== screen);
     });
     if (screen === "backtest") { loadBacktest(); return; }
     if (!sb) {
@@ -291,6 +293,8 @@
     else if (screen === "detail") { if (arg) setDetailTicker(arg); loadDetail(); }
     else if (screen === "signals") loadSignals();
     else if (screen === "heatmap") loadHeatmap();
+    else if (screen === "watchlist") loadWatchlistScreen();
+    else if (screen === "settings") loadSettings();
   }
 
   function goToDetail(ticker) {
@@ -724,6 +728,15 @@
         detailCustom[input.getAttribute("data-indicator")] = input.checked;
         if (detailRows.length) renderDetailCharts(detailRows);
       });
+    });
+
+    $("detail-debug-btn").addEventListener("click", function () {
+      var ticker = $("detail-ticker").value;
+      if (!ticker) return;
+      loadDebugInfo(ticker);
+    });
+    $("detail-debug-close").addEventListener("click", function () {
+      $("detail-debug").classList.add("hidden");
     });
   }
 
@@ -1314,6 +1327,370 @@
       });
       body.appendChild(tr);
     });
+  }
+
+  // =====================================================================
+  // 화면 7: Watchlist (C1) + 분류 편집 (C2)
+  // =====================================================================
+  var wlData = [];        // 최신 스캔 기준 opportunity_scores + asset_classification 병합
+  var wlClassMap = {};    // ticker -> asset_classification 행
+  var wlModal = null;     // 분류 편집 모달
+
+  function bindWatchlistControls() {
+    $("wl-filter-strategy").addEventListener("change", renderWatchlist);
+    $("wl-filter-risk").addEventListener("change", renderWatchlist);
+    $("wl-filter-decision").addEventListener("change", renderWatchlist);
+  }
+
+  // opportunity_scores.decision 우선, 없으면 BUY/WATCH 판단
+  function rowDecision(r) {
+    if (r.decision) return r.decision;
+    return judgeSignal(rowScore(r), r.risk_level);
+  }
+  function decisionBadge(r) {
+    var d = rowDecision(r);
+    return '<span class="badge badge-decision dec-' + String(d).toLowerCase() + '">' + d + "</span>";
+  }
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  async function loadWatchlistScreen() {
+    await runLoad(
+      "opportunity_scores + asset_classification",
+      async function () {
+        var dRes = await sb.from("opportunity_scores").select("date").order("date", { ascending: false }).limit(1);
+        if (dRes.error) throw dRes.error;
+        var latest = dRes.data && dRes.data.length ? dRes.data[0].date : null;
+
+        var rows = [];
+        if (latest) {
+          var rRes = await sb.from("opportunity_scores").select("*").eq("date", latest);
+          if (rRes.error) throw rRes.error;
+          rows = rRes.data || [];
+        }
+
+        var cRes = await sb.from("asset_classification").select("*");
+        if (cRes.error) throw cRes.error;
+        wlClassMap = {};
+        (cRes.data || []).forEach(function (c) { wlClassMap[c.ticker] = c; });
+
+        wlData = rows.map(function (r) {
+          var c = wlClassMap[r.ticker] || {};
+          return Object.assign({}, r, {
+            asset_type: c.asset_type || "-",
+            class_confidence: c.confidence != null ? c.confidence : r.classification_confidence,
+            class_source: c.classification_source || "-",
+            class_reason: c.reason || ""
+          });
+        });
+
+        populateWatchlistFilters();
+        renderWatchlist();
+        $("watchlist-content").classList.remove("hidden");
+      },
+      $("watchlist-loading"),
+      $("watchlist-error")
+    );
+  }
+
+  function populateWatchlistFilters() {
+    var stratSel = $("wl-filter-strategy");
+    var riskSel = $("wl-filter-risk");
+    var decSel = $("wl-filter-decision");
+    var curStrat = stratSel.value, curRisk = riskSel.value, curDec = decSel.value;
+
+    var strats = {};
+    wlData.forEach(function (r) { if (r.strategy_type) strats[r.strategy_type] = true; });
+    stratSel.innerHTML = '<option value="">전략: 전체</option>';
+    Object.keys(STRATEGY_LABELS).forEach(function (k) {
+      if (strats[k]) {
+        var o = document.createElement("option");
+        o.value = k; o.textContent = STRATEGY_LABELS[k];
+        stratSel.appendChild(o);
+      }
+    });
+
+    var risks = {};
+    wlData.forEach(function (r) { if (r.risk_level) risks[r.risk_level] = true; });
+    riskSel.innerHTML = '<option value="">리스크: 전체</option>';
+    ["LOW", "MEDIUM", "HIGH", "VERY_HIGH"].forEach(function (k) {
+      if (risks[k]) {
+        var o = document.createElement("option");
+        o.value = k; o.textContent = k;
+        riskSel.appendChild(o);
+      }
+    });
+
+    var decs = {};
+    wlData.forEach(function (r) { var d = rowDecision(r); if (d) decs[d] = true; });
+    decSel.innerHTML = '<option value="">판단: 전체</option>';
+    Object.keys(decs).forEach(function (k) {
+      var o = document.createElement("option");
+      o.value = k; o.textContent = k;
+      decSel.appendChild(o);
+    });
+
+    stratSel.value = curStrat; riskSel.value = curRisk; decSel.value = curDec;
+  }
+
+  function renderWatchlist() {
+    var strat = $("wl-filter-strategy").value;
+    var risk = $("wl-filter-risk").value;
+    var dec = $("wl-filter-decision").value;
+
+    var filtered = wlData.filter(function (r) {
+      if (strat && r.strategy_type !== strat) return false;
+      if (risk && r.risk_level !== risk) return false;
+      if (dec && rowDecision(r) !== dec) return false;
+      return true;
+    });
+
+    var body = $("watchlist-table").querySelector("tbody");
+    body.innerHTML = "";
+    if (!filtered.length) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">데이터가 없습니다.</td></tr>';
+      return;
+    }
+    filtered.forEach(function (r) {
+      var tr = document.createElement("tr");
+
+      var tdTk = document.createElement("td");
+      tdTk.className = "ticker-cell";
+      tdTk.appendChild(tickerLabel(r.ticker));
+      tr.appendChild(tdTk);
+
+      var tdAt = document.createElement("td");
+      tdAt.textContent = r.asset_type || "-";
+      tr.appendChild(tdAt);
+
+      var tdStrat = document.createElement("td");
+      tdStrat.innerHTML = strategyBadge(r);
+      tr.appendChild(tdStrat);
+
+      var tdConf = document.createElement("td");
+      tdConf.textContent = (r.class_confidence == null || isNaN(r.class_confidence)) ? "-" : Math.round(r.class_confidence * 100) + "%";
+      tr.appendChild(tdConf);
+
+      var tdScore = document.createElement("td");
+      tdScore.textContent = rowScore(r);
+      tr.appendChild(tdScore);
+
+      var tdRisk = document.createElement("td");
+      tdRisk.innerHTML = riskBadge(r);
+      tr.appendChild(tdRisk);
+
+      var tdDec = document.createElement("td");
+      tdDec.innerHTML = decisionBadge(r);
+      tr.appendChild(tdDec);
+
+      var tdDate = document.createElement("td");
+      tdDate.textContent = r.date || "-";
+      tr.appendChild(tdDate);
+
+      var tdEdit = document.createElement("td");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wl-edit-btn";
+      btn.textContent = "편집";
+      btn.addEventListener("click", function () { openClassificationModal(r.ticker); });
+      tdEdit.appendChild(btn);
+      tr.appendChild(tdEdit);
+
+      body.appendChild(tr);
+    });
+  }
+
+  // ---- C2: 분류 편집 모달 ----
+  function ensureWlModal() {
+    if (wlModal) return wlModal;
+    var overlay = document.createElement("div");
+    overlay.className = "modal-overlay hidden";
+    overlay.id = "wl-modal-overlay";
+    overlay.innerHTML =
+      '<div class="modal-box">' +
+        '<div class="modal-head"><h3>분류 편집</h3>' +
+        '<button type="button" class="modal-close" id="wl-modal-close">✕</button></div>' +
+        '<div class="modal-body" id="wl-modal-body"></div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) closeWlModal(); });
+    $("wl-modal-close").addEventListener("click", closeWlModal);
+    wlModal = overlay;
+    return wlModal;
+  }
+  function closeWlModal() {
+    if (wlModal) wlModal.classList.add("hidden");
+  }
+
+  async function openClassificationModal(ticker) {
+    var modal = ensureWlModal();
+    var body = $("wl-modal-body");
+    var c = wlClassMap[ticker] || {};
+    var curStrat = c.strategy_type ||
+      (wlData.find(function (r) { return r.ticker === ticker; }) || {}).strategy_type || "";
+
+    var opts = Object.keys(STRATEGY_LABELS).map(function (k) {
+      return '<option value="' + k + '"' + (k === curStrat ? " selected" : "") + '>' +
+        STRATEGY_LABELS[k] + " (" + k + ")</option>";
+    }).join("");
+
+    body.innerHTML =
+      '<div class="modal-info">' +
+        '<div><span class="m-label">종목</span><strong>' + ticker + '</strong></div>' +
+        '<div><span class="m-label">현재 분류</span><strong>' +
+          (c.strategy_type ? STRATEGY_LABELS[c.strategy_type] + " (" + c.strategy_type + ")" : "-") + '</strong></div>' +
+        '<div><span class="m-label">분류 출처</span><strong>' + (c.classification_source || "-") + '</strong></div>' +
+        '<div><span class="m-label">신뢰도</span><strong>' +
+          (c.confidence != null ? Math.round(c.confidence * 100) + "%" : "-") + '</strong></div>' +
+        (c.reason ? '<div class="modal-reason"><span class="m-label">사유</span><p>' + escapeHtml(c.reason) + '</p></div>' : '') +
+      '</div>' +
+      '<label class="modal-field">전략 재분류' +
+        '<select id="wl-modal-strategy">' + opts + '</select>' +
+      '</label>' +
+      '<div class="modal-actions">' +
+        '<button type="button" class="btn-cancel" id="wl-modal-cancel">취소</button>' +
+        '<button type="button" class="btn-save" id="wl-modal-save">저장</button>' +
+      '</div>';
+
+    $("wl-modal-cancel").addEventListener("click", closeWlModal);
+    $("wl-modal-save").addEventListener("click", function () {
+      var newStrat = $("wl-modal-strategy").value;
+      saveClassificationOverride(ticker, newStrat, body);
+    });
+
+    modal.classList.remove("hidden");
+  }
+
+  async function saveClassificationOverride(ticker, newStrategy, bodyEl) {
+    var saveBtn = $("wl-modal-save");
+    saveBtn.disabled = true;
+    saveBtn.textContent = "저장 중…";
+    try {
+      var res = await sb.from("asset_classification").upsert({
+        ticker: ticker,
+        strategy_type: newStrategy,
+        classification_source: "manual",
+        updated_at: new Date().toISOString()
+      }, { onConflict: "ticker" });
+      if (res.error) throw res.error;
+      closeWlModal();
+      loadWatchlistScreen();
+    } catch (e) {
+      if (bodyEl) {
+        var err = document.createElement("div");
+        err.className = "error";
+        err.textContent = "저장 실패: " + (e && e.message ? e.message : e);
+        bodyEl.appendChild(err);
+      }
+      saveBtn.disabled = false;
+      saveBtn.textContent = "저장";
+    }
+  }
+
+  // =====================================================================
+  // 화면 8: 설정 (C3, 읽기 전용)
+  // =====================================================================
+  var SETTINGS_STRATEGY_RULES = {
+    quality:            { strong: 65, opportunity: 55, watch: 40, neutral: 25 },
+    established_growth: { strong: 65, opportunity: 55, watch: 40, neutral: 25 },
+    speculative:        { strong: 70, opportunity: 65, watch: 50, neutral: 30 },
+    broad_market_etf:   { strong: 60, opportunity: 50, watch: 35, neutral: 20 },
+    growth_etf:         { strong: 60, opportunity: 50, watch: 35, neutral: 20 },
+    dividend_etf:       { strong: 55, opportunity: 45, watch: 30, neutral: 15 },
+    income_etf:         { strong: 55, opportunity: 45, watch: 30, neutral: 15 },
+    sector_etf:         { strong: 60, opportunity: 50, watch: 35, neutral: 20 },
+    general:            { strong: 55, opportunity: 40, watch: 25, neutral: 10 },
+    other_etf:          { strong: 55, opportunity: 40, watch: 25, neutral: 10 }
+  };
+
+  function loadSettings() {
+    var body = $("settings-strategy-body");
+    if (body.childElementCount) return; // 정적 읽기 전용 — 한 번만 채움
+    body.innerHTML = "";
+    Object.keys(SETTINGS_STRATEGY_RULES).forEach(function (k) {
+      var r = SETTINGS_STRATEGY_RULES[k];
+      var tr = document.createElement("tr");
+      function cell(html) {
+        var td = document.createElement("td");
+        td.innerHTML = html;
+        return td;
+      }
+      tr.appendChild(cell(STRATEGY_LABELS[k] + " (" + k + ")"));
+      tr.appendChild(cell(String(r.opportunity)));
+      tr.appendChild(cell(String(r.strong)));
+      tr.appendChild(cell(String(r.watch)));
+      tr.appendChild(cell(String(r.neutral)));
+      body.appendChild(tr);
+    });
+  }
+
+  // =====================================================================
+  // C4: 상세 탭 진단 패널
+  // =====================================================================
+  async function loadDebugInfo(ticker) {
+    var panel = $("detail-debug");
+    panel.classList.remove("hidden");
+    await runLoad(
+      "opportunity_scores + asset_classification (진단)",
+      async function () {
+        var oRes = await sb.from("opportunity_scores").select("*")
+          .eq("ticker", ticker).order("date", { ascending: false }).limit(1);
+        if (oRes.error) throw oRes.error;
+        var opp = oRes.data && oRes.data.length ? oRes.data[0] : null;
+
+        var cRes = await sb.from("asset_classification").select("*")
+          .eq("ticker", ticker).limit(1);
+        if (cRes.error) throw cRes.error;
+        var cls = cRes.data && cRes.data.length ? cRes.data[0] : null;
+
+        var content = $("detail-debug-content");
+        if (!opp) {
+          content.innerHTML = '<div class="empty">진단할 기회점수 데이터가 없습니다.</div>';
+          content.classList.remove("hidden");
+          return;
+        }
+
+        var comps = opp.components || {};
+        var compRows = Object.keys(comps).map(function (k) {
+          return '<tr><td>' + escapeHtml(k) + '</td><td>' + fmtNum(comps[k]) + '</td></tr>';
+        }).join("") || '<tr><td colspan="2" class="empty">컴포넌트 없음</td></tr>';
+
+        content.innerHTML =
+          '<div class="debug-grid">' +
+            '<div class="debug-card"><h4>기본 정보</h4><table class="data-table debug-table">' +
+              '<tr><td>종목</td><td>' + ticker + '</td></tr>' +
+              '<tr><td>스캔 날짜</td><td>' + (opp.date || "-") + '</td></tr>' +
+              '<tr><td>전략</td><td>' + strategyLabel(opp.strategy_type) + ' (' + (opp.strategy_type || "-") + ')</td></tr>' +
+              '<tr><td>기회점수</td><td>' + rowScore(opp) + '</td></tr>' +
+              '<tr><td>판단</td><td>' + decisionBadge(opp) + '</td></tr>' +
+              '<tr><td>신호 신뢰도</td><td>' + (opp.signal_confidence != null ? Math.round(opp.signal_confidence * 100) + "%" : "-") + '</td></tr>' +
+              '<tr><td>분류 신뢰도</td><td>' + (opp.classification_confidence != null ? Math.round(opp.classification_confidence * 100) + "%" : "-") + '</td></tr>' +
+            '</table></div>' +
+            '<div class="debug-card"><h4>리스크 요인</h4><table class="data-table debug-table">' +
+              '<tr><td>risk_score</td><td>' + fmtNum(opp.risk_score) + '</td></tr>' +
+              '<tr><td>risk_level</td><td>' + riskBadge(opp) + '</td></tr>' +
+              (cls ? '<tr><td>자산유형</td><td>' + escapeHtml(cls.asset_type || "-") + '</td></tr>' +
+                     '<tr><td>분류 출처</td><td>' + escapeHtml(cls.classification_source || "-") + '</td></tr>' +
+                     '<tr><td>분류 사유</td><td>' + escapeHtml(cls.reason || "-") + '</td></tr>' : '') +
+            '</table></div>' +
+            '<div class="debug-card debug-card-wide"><h4>14개 컴포넌트 점수</h4><table class="data-table debug-table">' +
+              '<thead><tr><th>컴포넌트</th><th>점수</th></tr></thead><tbody>' + compRows + '</tbody>' +
+            '</table></div>' +
+            '<div class="debug-card debug-card-wide"><h4>4축 점수</h4><table class="data-table debug-table">' +
+              '<tr><td>기술 (technical)</td><td>' + fmtNum(opp.technical_score) + '</td></tr>' +
+              '<tr><td>모멘텀 (momentum)</td><td>' + fmtNum(opp.momentum_score) + '</td></tr>' +
+              '<tr><td>펀더멘털 (fundamental)</td><td>' + fmtNum(opp.fundamental_score) + '</td></tr>' +
+              '<tr><td>밸류 (valuation)</td><td>' + fmtNum(opp.valuation_score) + '</td></tr>' +
+            '</table></div>' +
+          '</div>';
+        content.classList.remove("hidden");
+      },
+      $("detail-debug-loading"),
+      $("detail-debug-error")
+    );
   }
 
   window.loadHeatmap = loadHeatmap;

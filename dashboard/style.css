@@ -521,3 +521,226 @@ tbody tr.candidate:hover { background: rgba(91, 141, 239, 0.14); }
   .detail-panel:first-child .detail-panel-canvas { height:210px; }
   .detail-chart-head { align-items:center; }
 }
+
+/* ---------- Watchlist 탭 (C1/C2) ---------- */
+.wl-filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.wl-filters select {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 130px;
+}
+.wl-filters select:focus { outline: none; border-color: var(--accent); }
+
+.wl-edit-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wl-edit-btn:hover { border-color: var(--accent); color: #cfe0ff; }
+
+/* 진단 판단 배지 (5등급) */
+.badge-decision {
+  background: rgba(152, 162, 179, 0.14);
+  color: #c2cad6;
+  border-color: rgba(152, 162, 179, 0.4);
+}
+.badge-decision.dec-buy { background: rgba(46, 204, 113, 0.16); color: #6fe0a0; border-color: rgba(46, 204, 113, 0.45); }
+.badge-decision.dec-watch { background: rgba(245, 166, 35, 0.14); color: #f5c77a; border-color: rgba(245, 166, 35, 0.4); }
+.badge-decision.dec-strong_opportunity { background: rgba(91, 141, 239, 0.18); color: #9fc0ff; border-color: rgba(91, 141, 239, 0.5); }
+.badge-decision.dec-opportunity { background: rgba(91, 141, 239, 0.14); color: #9fc0ff; border-color: rgba(91, 141, 239, 0.4); }
+.badge-decision.dec-neutral { background: rgba(152, 162, 179, 0.12); color: #aeb6c2; border-color: rgba(152, 162, 179, 0.35); }
+.badge-decision.dec-avoid { background: rgba(255, 92, 92, 0.14); color: #ff9b9b; border-color: rgba(255, 92, 92, 0.45); }
+
+/* ---------- 설정 탭 (C3) ---------- */
+.settings-content { max-width: 860px; }
+.settings-content h3 {
+  font-size: 15px;
+  margin: 22px 0 12px;
+  color: var(--text);
+}
+.settings-content h3:first-child { margin-top: 4px; }
+.settings-note {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* ---------- 상세 탭 진단 패널 (C4) ---------- */
+.debug-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.debug-btn:hover { border-color: var(--accent); color: #cfe0ff; }
+
+.debug-panel {
+  margin-top: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  box-shadow: var(--shadow);
+}
+.debug-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.debug-head h3 { margin: 0; font-size: 14px; color: var(--text); }
+.debug-close {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.debug-close:hover { color: var(--text); border-color: var(--accent); }
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.debug-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px 14px;
+}
+.debug-card-wide { grid-column: 1 / -1; }
+.debug-card h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.debug-table { min-width: 0; background: transparent; }
+.debug-table thead th {
+  position: static;
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.debug-table tbody td {
+  text-align: left;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.debug-table tbody tr:last-child td { border-bottom: none; }
+
+/* ---------- 분류 편집 모달 (C2) ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 440px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { margin: 0; font-size: 15px; color: var(--text); }
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 16px; }
+.modal-info {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin-bottom: 14px;
+}
+.modal-info > div { display: flex; flex-direction: column; gap: 2px; }
+.modal-info .m-label { font-size: 11px; color: var(--text-dim); }
+.modal-info strong { font-size: 13px; }
+.modal-reason { grid-column: 1 / -1; }
+.modal-reason p { margin: 2px 0 0; font-size: 12px; color: var(--text); line-height: 1.5; }
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+.modal-field select {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.modal-field select:focus { outline: none; border-color: var(--accent); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.modal-actions button {
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+}
+.btn-cancel { background: var(--surface-2); color: var(--text); }
+.btn-cancel:hover { border-color: var(--text-dim); }
+.btn-save {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.btn-save:hover { background: #4a7bd8; }
+.btn-save:disabled { opacity: 0.6; cursor: default; }

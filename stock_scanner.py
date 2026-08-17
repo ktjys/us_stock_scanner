@@ -23,6 +23,7 @@ from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
 from supabase import create_client
 
 from asset_classification import classify_asset
+from decision_engine import Decision, make_decision
 
 WATCHLIST_FILE = "watchlist.csv"
 ALERT_SCORE = 55  # V8: 55-59 밴드가 유일한 기회 구간 (52주 백테스트 검증)
@@ -34,6 +35,9 @@ ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
 SCAN_WORKERS = 8  # 종목별 병렬 분석 워커 수 (Yahoo 스로틀링을 겸함)
+
+# V8: Signal 생성이 허용되는 Decision 등급 (evaluate_opportunities 게이트).
+_SIGNAL_DECISIONS = (Decision.OPPORTUNITY, Decision.STRONG_OPPORTUNITY)
 
 _db: Any = None
 _db_lock = threading.Lock()
@@ -349,6 +353,7 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
     rscore, rlevel = risk_score(df, i, info)
     conf = signal_confidence(oscore)
     subs = component_sub_scores(comps)
+    decision = make_decision(oscore, rlevel, conf, strategy, classification_confidence)
 
     # 알림 메시지의 기술적 조건 텍스트는 V7 조건문을 그대로 사용한다
     # (V8 전략별 스코어링과 무관하게 동작하는 표시용 정보).
@@ -367,6 +372,7 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
                 opportunity_score=oscore,
                 risk_level=rlevel, risk_score=rscore,
                 signal_confidence=conf,
+                decision=decision,
                 technical_score=subs["technical_score"],
                 momentum_score=subs["momentum_score"],
                 fundamental_score=subs["fundamental_score"],
@@ -421,6 +427,8 @@ def analyze(ticker: str, date: str | None = None,
     """
     df = fetch_history(ticker)
     if df.empty:
+        if db is not None:
+            log_data_quality(ticker, "missing_price", {"reason": "no_data"})
         return None
     as_of = (datetime.strptime(date, "%Y-%m-%d").date()
              if date else datetime.now(timezone.utc).date())
@@ -429,6 +437,9 @@ def analyze(ticker: str, date: str | None = None,
         age = (as_of - last.date()).days
         if age > STALE_DATA_DAYS:
             print(f"{ticker}: 최근 데이터가 {age}일 전 ({last.date()}) - 스킵")
+            if db is not None:
+                log_data_quality(ticker, "stale_data",
+                                 {"age_days": age, "last_date": str(last.date())})
             return None
     info = fetch_info(ticker)
     strategy, cconf = resolve_strategy(ticker, db, info)
@@ -460,6 +471,10 @@ def evaluate_opportunities(date: str | None = None,
             if persist:
                 market_date = x.get("data_date", date)
                 save_opportunity_score(x, market_date)
+                # V8 spec §8: Decision이 알림 조건일 때만 Signal 생성 (threshold=0으로
+                # V7 ALERT_SCORE 우회 — general OPPORTUNITY는 40점부터 가능).
+                if x.get("decision") in _SIGNAL_DECISIONS:
+                    save_signal(x, market_date, threshold=0)
             results.append(x)
         except Exception as e:
             print(f"{ticker} Opportunity 평가 실패: {e}", file=sys.stderr)
@@ -505,6 +520,7 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         "risk_score": x.get("risk_score"),
         "signal_confidence": x.get("signal_confidence"),
         "classification_confidence": x.get("classification_confidence"),
+        "decision": x.get("decision"),
         "technical_score": x.get("technical_score"),
         "momentum_score": x.get("momentum_score"),
         "fundamental_score": x.get("fundamental_score"),
@@ -523,12 +539,59 @@ def save_opportunity_score(x: dict[str, Any], date: str) -> None:
         "risk_score": x.get("risk_score"),
         "signal_confidence": x.get("signal_confidence"),
         "classification_confidence": x.get("classification_confidence"),
+        "decision": x.get("decision"),
         "technical_score": x.get("technical_score"),
         "momentum_score": x.get("momentum_score"),
         "fundamental_score": x.get("fundamental_score"),
         "valuation_score": x.get("valuation_score"),
         "components": x.get("components"),
     }, on_conflict="date,ticker").execute()
+
+
+def start_run() -> int:
+    """scan_runs에 실행 시작을 기록하고 run_id를 반환한다.
+
+    started_at은 Supabase 서버 타임스탬프(now())를 사용하고,
+    version은 테이블 기본값(v10)으로 남긴다.
+    """
+    res = (get_db().table("scan_runs")
+           .insert({"started_at": "now()", "status": "running"})
+           .execute())
+    return res.data[0]["id"]
+
+
+def finish_run(run_id: int, stats: dict[str, Any]) -> None:
+    """scan_runs 실행 결과를 갱신한다.
+
+    stats 키: total, evaluated, signals, failed, status, error_summary
+    """
+    get_db().table("scan_runs").update({
+        "finished_at": "now()",
+        "watchlist_count": stats["total"],
+        "evaluated_count": stats["evaluated"],
+        "signal_count": stats["signals"],
+        "failure_count": stats["failed"],
+        "status": stats["status"],
+        "error_summary": stats.get("error_summary"),
+    }).eq("id", run_id).execute()
+
+
+def log_data_quality(ticker: str, issue_type: str, details: dict | None = None) -> None:
+    """데이터 품질 이슈를 data_quality_log 테이블에 기록한다 (best-effort).
+
+    issue_type: "api_failure" | "stale_data" | "missing_price" | "calculation_error"
+    logged_at은 Supabase 서버 타임스탬프(now())를 사용한다.
+    로깅 실패는 스캔 파이프라인을 중단시키지 않는다.
+    """
+    try:
+        get_db().table("data_quality_log").insert({
+            "ticker": ticker,
+            "issue_type": issue_type,
+            "details": details,
+            "logged_at": "now()",
+        }).execute()
+    except Exception:  # noqa: BLE001 - 로깅은 best-effort
+        pass
 
 
 def _date_key(value: Any) -> str:
@@ -717,6 +780,65 @@ def build_alert_message(candidates: list[dict[str, Any]], date: str) -> str:
     return msg
 
 
+_STRATEGY_LABELS = {
+    "general": "일반",
+    "quality": "우량주",
+    "established_growth": "성장주",
+    "speculative": "고변동",
+    "broad_market_etf": "시장ETF",
+    "growth_etf": "성장ETF",
+    "sector_etf": "섹터ETF",
+    "dividend_etf": "배당ETF",
+    "income_etf": "소득ETF",
+    "other_etf": "기타ETF",
+}
+
+_DECISION_EMOJI = {
+    Decision.STRONG_OPPORTUNITY: "🔥",
+    Decision.OPPORTUNITY: "🟢",
+    Decision.WATCH: "👀",
+    Decision.NEUTRAL: "⚪",
+    Decision.AVOID: "🚫",
+}
+
+
+def format_signal_message(x: dict[str, Any]) -> str:
+    """V8 신호를 텔레그램 메시지로 포맷한다 (V8 spec §12)."""
+    decision = x.get("decision", Decision.WATCH)
+    strategy = x.get("strategy_type", "general")
+    label = _STRATEGY_LABELS.get(strategy, strategy)
+    emoji = _DECISION_EMOJI.get(decision, "❔")
+
+    comps = x.get("components") or {}
+    reason = ", ".join(
+        f"{k}({v})" for k, v in sorted(
+            ((k, v) for k, v in comps.items() if v),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+    ) or "-"
+
+    def _axis(label: str, key: str) -> str:
+        value = x.get(key)
+        return f"{label}: {value if value is not None else '-'}"
+
+    return "\n".join([
+        x["ticker"],
+        f"Strategy: {label}",
+        f"Decision: {emoji} {decision}",
+        "",
+        f"Opportunity: {x.get('opportunity_score') or x.get('score') or 0}",
+        f"Risk: {x.get('risk_level', '-')}",
+        f"Confidence: {(x.get('signal_confidence') or 0):.2f}",
+        "",
+        _axis("Technical", "technical_score"),
+        _axis("Momentum", "momentum_score"),
+        _axis("Fundamental", "fundamental_score"),
+        _axis("Valuation", "valuation_score"),
+        "",
+        f"Reason: {reason}",
+    ])
+
+
 def scan(date: str | None = None,
          persist: bool = True,
          notify: bool = True,
@@ -743,6 +865,8 @@ def scan(date: str | None = None,
                 save_signal(x, market_date, threshold)
             return ticker, x, None
         except Exception as e:
+            if db is not None:
+                log_data_quality(ticker, "api_failure", {"error": str(e)})
             return ticker, None, e
 
     candidates: list[dict[str, Any]] = []
@@ -790,8 +914,27 @@ def main() -> None:
     parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
                         help="신호 임계값 (기본 55)")
     args = parser.parse_args()
-    _, failures = scan(threshold=args.threshold)
-    evaluate_opportunities()
+    run_id = start_run()
+    try:
+        candidates, failures = scan(threshold=args.threshold)
+        evaluate_opportunities()
+        total = len(load_watchlist(get_db()))
+        stats = {
+            "total": total,
+            "evaluated": total - len(failures),
+            "signals": len(candidates),
+            "failed": len(failures),
+            "status": "failed" if failures else "completed",
+            "error_summary": ", ".join(failures) if failures else None,
+        }
+    except Exception as e:
+        stats = {
+            "total": 0, "evaluated": 0, "signals": 0, "failed": 0,
+            "status": "failed", "error_summary": str(e),
+        }
+        finish_run(run_id, stats)
+        raise
+    finish_run(run_id, stats)
     if failures:
         sys.exit(f"❌ {len(failures)}개 종목 처리 실패: {', '.join(failures)}")
 

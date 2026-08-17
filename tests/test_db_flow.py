@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from stock_scanner import (_fetch_all, analyze, load_watchlist, prune_daily_data,
-                           save_daily, save_signal, telegram, update_returns)
+                           save_daily, save_opportunity_score, save_signal,
+                           telegram, update_returns)
 
 
 class _FakeResponse:
@@ -211,10 +212,38 @@ def test_save_signal_above_threshold_upsert(monkeypatch):
         "strategy_type": None, "opportunity_score": None,
         "risk_level": None, "risk_score": None,
         "signal_confidence": None, "classification_confidence": None,
+        "decision": None,
         "technical_score": None, "momentum_score": None,
         "fundamental_score": None, "valuation_score": None,
         "components": None,
     }, "signal_date,ticker")]
+
+
+def test_save_signal_saves_decision(monkeypatch):
+    x = {"ticker": "AAPL", "score": 70, "price": 100.0, "rsi": 30.0,
+         "drawdown": -12.0, "decision": "OPPORTUNITY"}
+    db = _FakeDb()
+    monkeypatch.setattr("stock_scanner.get_db", lambda: db)
+    save_signal(x, "2026-08-13")
+    payload = db.calls[0][2]
+    assert payload["decision"] == "OPPORTUNITY"
+
+
+def test_save_opportunity_score_saves_decision(monkeypatch):
+    x = {"ticker": "AAPL", "decision": "WATCH"}
+    db = _FakeDb()
+    monkeypatch.setattr("stock_scanner.get_db", lambda: db)
+    save_opportunity_score(x, "2026-08-13")
+    assert db.calls == [("upsert", "opportunity_scores", {
+        "date": "2026-08-13", "ticker": "AAPL",
+        "strategy_type": None, "opportunity_score": None,
+        "risk_level": None, "risk_score": None,
+        "signal_confidence": None, "classification_confidence": None,
+        "decision": "WATCH",
+        "technical_score": None, "momentum_score": None,
+        "fundamental_score": None, "valuation_score": None,
+        "components": None,
+    }, "date,ticker")]
 
 
 # ---------------------------------------------------------------------------

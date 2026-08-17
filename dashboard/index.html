@@ -28,6 +28,8 @@
     <button class="tab-btn" data-screen="signals">신호·성과</button>
     <button class="tab-btn" data-screen="heatmap">히트맵</button>
     <button class="tab-btn" data-screen="backtest">백테스트</button>
+    <button class="tab-btn" data-screen="watchlist">Watchlist</button>
+    <button class="tab-btn" data-screen="settings">설정</button>
   </nav>
 
   <main>
@@ -106,6 +108,7 @@
         <label>종목
           <select id="detail-ticker"></select>
         </label>
+        <button id="detail-debug-btn" type="button" class="debug-btn" title="진단 정보 보기">🔍 진단</button>
         <div class="period-buttons" id="detail-periods">
           <button data-period="1">1개월</button>
           <button data-period="3" class="active">3개월</button>
@@ -147,6 +150,17 @@
           <div id="detail-tooltip-summary" class="chart-summary"></div>
           <div id="detail-chart-panels" class="detail-chart-panels"></div>
             <div class="chart-legend-hint">가격/MA20/MA50 · RSI · V8 점수 · 거래량을 원하는 조합으로 선택할 수 있습니다.</div>
+          </div>
+        </div>
+
+        <div id="detail-debug" class="debug-panel hidden">
+          <div class="debug-head">
+            <h3>🔍 진단 정보</h3>
+            <button id="detail-debug-close" type="button" class="debug-close">닫기</button>
+          </div>
+          <div id="detail-debug-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+          <div id="detail-debug-error" class="error hidden"></div>
+          <div id="detail-debug-content" class="hidden"></div>
         </div>
       </div>
     </section>
@@ -261,6 +275,58 @@
             <tbody id="backtest-recent-body"></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- 화면 7: Watchlist -->
+    <section id="screen-watchlist" class="screen hidden">
+      <div id="watchlist-loading" class="loading hidden"><span class="spinner"></span> 로딩 중…</div>
+      <div id="watchlist-error" class="error hidden"></div>
+      <div id="watchlist-content" class="hidden">
+        <div class="wl-filters">
+          <select id="wl-filter-strategy"><option value="">전략: 전체</option></select>
+          <select id="wl-filter-risk"><option value="">리스크: 전체</option></select>
+          <select id="wl-filter-decision"><option value="">판단: 전체</option></select>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="watchlist-table">
+            <thead><tr>
+              <th>종목</th><th>자산유형</th><th>전략</th><th>신뢰도</th>
+              <th>기회점수</th><th>리스크</th><th>판단</th><th>최근 스캔</th><th>편집</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 화면 8: 설정 (읽기 전용) -->
+    <section id="screen-settings" class="screen hidden">
+      <div class="settings-content">
+        <h3>알림 임계값</h3>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>설정</th><th>값</th><th>설명</th></tr></thead>
+            <tbody>
+              <tr><td>Signal Threshold</td><td>55</td><td>신호 생성 최소 기회점수</td></tr>
+              <tr><td>VERY_HIGH 리스크</td><td>≥75</td><td>VERY_HIGH 판정 기준 (risk_score)</td></tr>
+              <tr><td>HIGH 리스크</td><td>55~74</td><td>HIGH 판정 기준</td></tr>
+              <tr><td>MEDIUM 리스크</td><td>35~54</td><td>MEDIUM 판정 기준</td></tr>
+              <tr><td>LOW 리스크</td><td>0~34</td><td>LOW 판정 기준</td></tr>
+              <tr><td>신호 신뢰도 최소</td><td>0.50</td><td>이하일 때 OPPORTUNITY 이상 불가 (최대 WATCH)</td></tr>
+              <tr><td>분류 신뢰도 최소</td><td>0.40</td><td>이하일 때 OPPORTUNITY 이상 불가 (최대 WATCH)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>전략별 임계값</h3>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>전략</th><th>OPPORTUNITY</th><th>STRONG</th><th>WATCH</th><th>NEUTRAL</th></tr></thead>
+            <tbody id="settings-strategy-body"></tbody>
+          </table>
+        </div>
+        <p class="settings-note">※ 이 화면은 읽기 전용 표시입니다. 값 변경은 아직 저장되지 않습니다.</p>
       </div>
     </section>
   </main>
