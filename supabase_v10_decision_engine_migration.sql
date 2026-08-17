@@ -1,13 +1,15 @@
 -- V10: Decision engine migration
 -- Add decision column to core tables and indexes for decision tracking
--- References: supabase_v8_phase2_migration.sql style (Korean comments, idempotent)
+-- PostgreSQL syntax: COMMENT ON COLUMN (not inline COMMENT)
 
 -- ---------------------------------------------------------------------------
 -- opportunity_scores: V8 기회점수 기반 판단(decision) 저장
 -- ---------------------------------------------------------------------------
 
 alter table opportunity_scores
-  add column if not exists decision text comment 'V8 판단: BUY, WATCH, etc.';
+  add column if not exists decision text;
+
+comment on column opportunity_scores.decision is 'V8 판단: STRONG_OPPORTUNITY, OPPORTUNITY, WATCH, NEUTRAL, AVOID';
 
 create index if not exists idx_opportunity_scores_decision
   on opportunity_scores(decision);
@@ -17,7 +19,9 @@ create index if not exists idx_opportunity_scores_decision
 -- ---------------------------------------------------------------------------
 
 alter table signals
-  add column if not exists decision text comment 'V8 신호 판단: BUY, WATCH, etc.';
+  add column if not exists decision text;
+
+comment on column signals.decision is 'V8 신호 판단: STRONG_OPPORTUNITY, OPPORTUNITY, WATCH, NEUTRAL, AVOID';
 
 create index if not exists idx_signals_decision
   on signals(decision);
@@ -27,7 +31,9 @@ create index if not exists idx_signals_decision
 -- ---------------------------------------------------------------------------
 
 alter table daily_data
-  add column if not exists decision text comment 'V8 일일 판단: BUY, WATCH, etc.';
+  add column if not exists decision text;
+
+comment on column daily_data.decision is 'V8 일일 판단: STRONG_OPPORTUNITY, OPPORTUNITY, WATCH, NEUTRAL, AVOID';
 
 create index if not exists idx_daily_data_decision
   on daily_data(decision);
