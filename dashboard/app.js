@@ -1490,20 +1490,15 @@
       tdDate.textContent = r.date || "-";
       tr.appendChild(tdDate);
 
-      var tdEdit = document.createElement("td");
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "wl-edit-btn";
-      btn.textContent = "편집";
-      btn.addEventListener("click", function () { openClassificationModal(r.ticker); });
-      tdEdit.appendChild(btn);
-      tr.appendChild(tdEdit);
+      var tdSrc = document.createElement("td");
+      tdSrc.textContent = r.class_source || "-";
+      tdSrc.title = r.class_reason || "";
+      tr.appendChild(tdSrc);
 
       body.appendChild(tr);
     });
   }
 
-  // ---- C2: 분류 편집 모달 ----
   function ensureWlModal() {
     if (wlModal) return wlModal;
     var overlay = document.createElement("div");
