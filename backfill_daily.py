@@ -95,14 +95,26 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
 
 
 def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
-    """V8 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다."""
+    """V8 신호 승격. 동일 종목 5일 cooldown 내에서는 최고점 1건만 남긴다.
+
+    수익률은 모든 daily_data 행을 기준으로 계산한다 (고득점 신호만 비교하면
+    실제 거래일 수익률과 달라지므로).
+    """
+    # 모든 행을 종목별로 인덱싱 (수익률 계산용)
+    all_by_ticker: dict[str, list[dict]] = {}
+    for r in records:
+        all_by_ticker.setdefault(r["ticker"], []).append(r)
+    for ticker_rows in all_by_ticker.values():
+        ticker_rows.sort(key=lambda r: r["date"])
+
+    # 고득점 신호만 필터링 (승격 대상)
     by_ticker: dict[str, list[dict]] = {}
     for r in records:
         if r["score"] >= threshold:
             by_ticker.setdefault(r["ticker"], []).append(r)
 
     signals: list[dict] = []
-    for rows in by_ticker.values():
+    for ticker, rows in by_ticker.items():
         rows = sorted(rows, key=lambda r: r["date"])
         selected: list[dict] = []
         i = 0
@@ -117,8 +129,10 @@ def _promote_signals(records: list[dict], threshold: int) -> list[dict]:
             selected.append(max(group, key=lambda r: (r["score"], r["date"])))
             i = j
 
+        # 모든 daily_data를 기준으로 수익률 계산
+        all_rows = all_by_ticker.get(ticker, [])
         for r in selected:
-            after = [x for x in rows if x["date"] > r["date"]]
+            after = [x for x in all_rows if x["date"] > r["date"]]
             rets: dict[str, float | None] = {}
             for n, key in SIGNAL_RETURN_KEYS:
                 rets[key] = (
