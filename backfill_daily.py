@@ -19,7 +19,7 @@ from backtest import _compute_indicators, _get_db_if_available, _load_tickers
 from opportunity_engine import (component_sub_scores, compute_technical_components,
                                 opportunity_score, risk_score, signal_confidence)
 from stock_scanner import (ALERT_SCORE, ALERT_COOLDOWN_DAYS, SCORE_VERSION,
-                           fetch_history, resolve_strategy, _relative_strength_series)
+                           fetch_history, fetch_info, resolve_strategy, _relative_strength_series)
 
 UPSERT_BATCH = 500
 # (신호일 이후 거래일 수, signals 컬럼명)
@@ -42,6 +42,7 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
     가중치 자동 재정규화), 리스크는 beta 중간값·수익성 0점 기본값으로 계산한다.
     행에 필요한 지표가 하나라도 NaN이면 건너뛴다.
     """
+    info = fetch_info(ticker)
     df = _compute_indicators(df)
     if df.empty:
         return []
@@ -57,7 +58,7 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
     for i in range(len(df)):
         if not mask[i] or i < 2:
             continue
-        comps = compute_technical_components(df, i, market_df)
+        comps = compute_technical_components(df, i, market_df, rs_series=rs_series)
         if comps is None:
             continue
         price = float(close.iloc[i])
@@ -71,7 +72,7 @@ def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
 
         score = opportunity_score(comps, strategy)
         subs = component_sub_scores(comps)
-        risk, level = risk_score(df, i)
+        risk, level = risk_score(df, i, info)
         records.append({
             "date": str(df.index[i])[:10], "ticker": ticker, "price": price,
             "rsi": rv, "prev_rsi": prev, "ma20": ma20, "ma50": ma50,

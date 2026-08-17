@@ -69,7 +69,8 @@ def _num(value: Any) -> float | None:
 
 
 def compute_technical_components(df: pd.DataFrame, i: int,
-                                 market_df: pd.DataFrame | None = None) -> dict[str, int] | None:
+                                 market_df: pd.DataFrame | None = None,
+                                 rs_series: pd.Series | None = None) -> dict[str, int] | None:
     """행 i의 V8 기술 컴포넌트 10개 점수를 계산한다.
 
     df는 지표 컬럼(rsi, ma20, ma50, high60, avgvol)이 이미 계산된 프레임이다
@@ -78,6 +79,7 @@ def compute_technical_components(df: pd.DataFrame, i: int,
     - 8개 V7 컴포넌트는 stock_scanner.score_signal의 details를 그대로 사용한다.
     - momentum_20d/breakout은 20일·60일 고점 기준 신규 컴포넌트.
     - 필수 값이 하나라도 NaN이거나 i < 2이면 None (백테스트 루프가 행을 건너뜀).
+    - rs_series가 제공되면 _relative_strength_series 재계산을 건너뛰어 O(n²)→O(n)으로 개선된다.
     """
     # 순환 임포트 방지: stock_scanner는 함수 내부에서만 임포트한다.
     from stock_scanner import _relative_strength_series, score_signal
@@ -109,9 +111,15 @@ def compute_technical_components(df: pd.DataFrame, i: int,
     if any(pd.isna(v) for v in required):
         return None
 
-    # QQQ 대비 5일 상대강도 (옵션: 시장 데이터가 있을 때만)
+    # QQQ 대비 5일 상대강도
+    # rs_series가 제공되면 재계산 생략 (O(n²) → O(n) 개선)
+    # 그렇지 않으면 market_df가 있으면 내부에서 계산한다.
     relative_strength_5d: float | None = None
-    if market_df is not None:
+    if rs_series is not None:
+        rs = rs_series.iloc[i]
+        rs_float = float(rs) if not pd.isna(rs) else None
+        relative_strength_5d = rs_float
+    elif market_df is not None:
         rs = _relative_strength_series(df, market_df).iloc[i]
         rs_float = float(rs) if not pd.isna(rs) else None
         relative_strength_5d = rs_float

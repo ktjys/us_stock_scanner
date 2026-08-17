@@ -142,7 +142,7 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
         rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
 
         if mode == "v8":
-            comps = compute_technical_components(df, i, market_df)
+            comps = compute_technical_components(df, i, market_df, rs_series=rs_series)
             if comps is None:
                 continue
             score = opportunity_score(comps, strategy)

@@ -218,7 +218,18 @@
 
   function tickerLabel(tk) {
     var nm = nameMap[tk];
-    return nm ? tk + '<span class="nm">' + nm + "</span>" : tk;
+    var container = document.createElement("span");
+    if (nm) {
+      var text = document.createTextNode(tk);
+      container.appendChild(text);
+      var nmSpan = document.createElement("span");
+      nmSpan.className = "nm";
+      nmSpan.textContent = nm;
+      container.appendChild(nmSpan);
+    } else {
+      container.textContent = tk;
+    }
+    return container;
   }
 
   // =====================================================================
@@ -541,7 +552,7 @@
         var td = document.createElement("td");
         if (col.key === "ticker") {
           td.className = "ticker-cell";
-          td.innerHTML = tickerLabel(r.ticker);
+          td.appendChild(tickerLabel(r.ticker));
         } else if (col.key === "strategy_type") {
           td.innerHTML = strategyLabel(r.strategy_type);
         } else if (col.key === "risk_level") {
@@ -624,7 +635,7 @@
           var tr = document.createElement("tr");
           var tdTk = document.createElement("td");
           tdTk.className = "ticker-cell";
-          tdTk.innerHTML = tickerLabel(tk);
+          tdTk.appendChild(tickerLabel(tk));
           tr.appendChild(tdTk);
           dates.forEach(function (d) {
             var td = document.createElement("td");
@@ -1004,7 +1015,7 @@
       tr.appendChild(cell(String(r.signal_date).slice(0, 10)));
       var tdTk = document.createElement("td");
       tdTk.className = "ticker-cell";
-      tdTk.innerHTML = tickerLabel(r.ticker);
+      tdTk.appendChild(tickerLabel(r.ticker));
       tr.appendChild(tdTk);
       tr.appendChild(cell(strategyLabel(r.strategy_type)));
       tr.appendChild(cell(riskBadge(r), "badge-cell"));
@@ -1250,7 +1261,7 @@
       tr.appendChild(cell(String(r.date).slice(0, 10)));
       var tdTk = document.createElement("td");
       tdTk.className = "ticker-cell";
-      tdTk.innerHTML = tickerLabel(r.ticker);
+      tdTk.appendChild(tickerLabel(r.ticker));
       tr.appendChild(tdTk);
       tr.appendChild(cell(String(r.score)));
       [r.ret5, r.ret10, r.ret20].forEach(function (v) {

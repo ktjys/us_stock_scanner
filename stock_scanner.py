@@ -9,6 +9,7 @@ import argparse
 import os
 import sys
 import time
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
@@ -32,13 +33,15 @@ PRUNE_RETENTION_DAYS = 365
 SCAN_WORKERS = 8  # 종목별 병렬 분석 워커 수 (Yahoo 스로틀링을 겸함)
 
 _db: Any = None
+_db_lock = threading.Lock()
 
 
 def get_db() -> Any:
     """지연 초기화되는 Supabase 클라이언트 (import 시 env 변수 불필요)."""
     global _db
-    if _db is None:
-        _db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    with _db_lock:
+        if _db is None:
+            _db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     return _db
 
 
@@ -210,13 +213,15 @@ def score_signal(price: float, rv: float, prev: float,
 
 
 _market_df_cache: pd.DataFrame | None = None
+_market_df_cache_lock = threading.Lock()
 
 
 def _market_history() -> pd.DataFrame:
     """V7 상대강도 계산용 QQQ 일봉. 프로세스 내 1회 캐시."""
     global _market_df_cache
-    if _market_df_cache is None or _market_df_cache.empty:
-        _market_df_cache = fetch_history("QQQ")
+    with _market_df_cache_lock:
+        if _market_df_cache is None or _market_df_cache.empty:
+            _market_df_cache = fetch_history("QQQ")
     return _market_df_cache.copy()
 
 
