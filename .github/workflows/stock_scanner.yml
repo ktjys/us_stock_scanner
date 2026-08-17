@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # 22:30 UTC = 한국시간 다음날 07:30.
-    - cron: "30 22 * * 1-5"
+    - cron: "30 00 * * 1-6"
 
 jobs:
   scan:
