@@ -26,7 +26,10 @@ from asset_classification import classify_asset
 
 WATCHLIST_FILE = "watchlist.csv"
 ALERT_SCORE = 55  # V8: 55-59 밴드가 유일한 기회 구간 (52주 백테스트 검증)
-SCORE_VERSION = 8
+# V7 스캐너(Legacy/Baseline) 전용 버전 라벨. daily_data/signals에 저장되며,
+# V8 Opportunity Engine 평가는 opportunity_scores 테이블(score_version 컬럼 없음)을
+# 사용하므로 V8 데이터에는 이 값이 기록되지 않는다.
+SCORE_VERSION = 7
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
@@ -359,7 +362,6 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
                 ma20=ma20, ma50=ma50, drawdown=dd,
                 volume_ratio=vr, relative_strength_5d=rs5,
                 score=oscore, conditions=cond,
-                score_version=SCORE_VERSION,
                 strategy_type=strategy,
                 classification_confidence=classification_confidence,
                 opportunity_score=oscore,
@@ -412,10 +414,10 @@ def resolve_strategy(ticker: str, db: Any | None = None,
 
 def analyze(ticker: str, date: str | None = None,
             db: Any | None = None) -> dict[str, Any] | None:
-    """ticker의 데이터를 받아 V8 전략 인식 신호를 계산한다.
+    """ticker의 데이터를 받아 V7 신호를 계산한다.
 
-    Yahoo 가격 데이터 + 메타데이터(info)를 받아 전략을 결정하고,
-    V8 Opportunity Engine으로 opportunity_score/risk/confidence를 산출한다.
+    Yahoo 가격 데이터를 받아 V7 반등확인형 스코어를 산출한다.
+    V8 Opportunity Engine 평가(전 watchlist)는 evaluate_opportunities()가 담당한다.
     """
     df = fetch_history(ticker)
     if df.empty:
@@ -430,7 +432,38 @@ def analyze(ticker: str, date: str | None = None,
             return None
     info = fetch_info(ticker)
     strategy, cconf = resolve_strategy(ticker, db, info)
-    return compute_signal_v8(ticker, df, _market_history(), strategy, info, cconf)
+    return compute_signal(ticker, df, _market_history())
+
+
+def evaluate_opportunities(date: str | None = None,
+                           persist: bool = True) -> list[dict[str, Any]]:
+    """21개 watchlist 전부를 V8 Opportunity Engine으로 평가한다.
+
+    스캐너(V7 후보 선별)와 분리된 경로로, 모든 종목의
+    Opportunity/Risk 점수를 opportunity_scores 테이블에 저장한다.
+    Phase 3 알림은 이 결과를 사용한다.
+    """
+    date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    db = get_db() if persist else None
+    tickers = load_watchlist(db)
+    results: list[dict[str, Any]] = []
+    for ticker in tickers:
+        try:
+            df = fetch_history(ticker)
+            if df.empty:
+                continue
+            info = fetch_info(ticker)
+            strategy, cconf = resolve_strategy(ticker, db, info)
+            x = compute_signal_v8(ticker, df, _market_history(), strategy, info, cconf)
+            if x is None:
+                continue
+            if persist:
+                market_date = x.get("data_date", date)
+                save_opportunity_score(x, market_date)
+            results.append(x)
+        except Exception as e:
+            print(f"{ticker} Opportunity 평가 실패: {e}", file=sys.stderr)
+    return results
 
 
 
@@ -478,6 +511,24 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         "valuation_score": x.get("valuation_score"),
         "components": x.get("components"),
     }, on_conflict="signal_date,ticker").execute()
+
+
+def save_opportunity_score(x: dict[str, Any], date: str) -> None:
+    """V8 Opportunity Engine 결과를 opportunity_scores 테이블에 저장한다."""
+    get_db().table("opportunity_scores").upsert({
+        "date": date, "ticker": x["ticker"],
+        "strategy_type": x.get("strategy_type"),
+        "opportunity_score": x.get("opportunity_score"),
+        "risk_level": x.get("risk_level"),
+        "risk_score": x.get("risk_score"),
+        "signal_confidence": x.get("signal_confidence"),
+        "classification_confidence": x.get("classification_confidence"),
+        "technical_score": x.get("technical_score"),
+        "momentum_score": x.get("momentum_score"),
+        "fundamental_score": x.get("fundamental_score"),
+        "valuation_score": x.get("valuation_score"),
+        "components": x.get("components"),
+    }, on_conflict="date,ticker").execute()
 
 
 def _date_key(value: Any) -> str:
@@ -740,6 +791,7 @@ def main() -> None:
                         help="신호 임계값 (기본 55)")
     args = parser.parse_args()
     _, failures = scan(threshold=args.threshold)
+    evaluate_opportunities()
     if failures:
         sys.exit(f"❌ {len(failures)}개 종목 처리 실패: {', '.join(failures)}")
 

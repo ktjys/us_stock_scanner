@@ -1,9 +1,8 @@
-"""과거 daily_data 백필 도구.
+"""과거 opportunity_scores 백필 도구.
 
 watchlist 종목의 1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤,
-각 과거 거래일을 행 단위로 V8 스코어링해 daily_data 테이블에 채운다.
-score >= threshold인 행은 signals 테이블로 승격하며, daily_data가 신호일
-이후까지 이미 있으므로 5/10/20거래일 수익률도 즉시 계산해 함께 저장한다.
+각 과거 거래일을 행 단위로 V8 스코어링해 opportunity_scores 테이블에 채운다.
+V8 백필은 signals 테이블에 저장하지 않는다 (신호는 V7 스캐너가 선별).
 모든 스코어링은 해당 행까지의 데이터만 사용하므로 lookahead bias가 없다.
 stdout에는 결과 요약만, 진행 로그/경고는 stderr로 출력한다.
 """
@@ -22,14 +21,14 @@ from stock_scanner import (ALERT_SCORE, ALERT_COOLDOWN_DAYS, SCORE_VERSION,
                            fetch_history, fetch_info, resolve_strategy, _relative_strength_series)
 
 UPSERT_BATCH = 500
-# (신호일 이후 거래일 수, signals 컬럼명)
+# (신호일 이후 거래일 수, signals 컬럼명) - _promote_signals(테스트 전용)에서 사용
 SIGNAL_RETURN_KEYS = ((5, "return_5d"), (10, "return_10d"), (20, "return_20d"))
-# daily_data 테이블 컬럼 (save_daily와 동일 - signals 전용 컬럼은 제외)
-DAILY_DATA_COLUMNS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
-                      "drawdown", "volume_ratio", "relative_strength_5d",
-                      "score", "score_version", "strategy_type", "opportunity_score",
-                      "risk_level", "technical_score", "momentum_score",
-                      "fundamental_score", "valuation_score", "components")
+# opportunity_scores 테이블 컬럼 (supabase_v9_opportunity_scores.sql 기준, PK date,ticker)
+OPPORTUNITY_SCORE_COLUMNS = ("date", "ticker", "strategy_type", "opportunity_score",
+                             "risk_level", "risk_score", "signal_confidence",
+                             "classification_confidence", "technical_score",
+                             "momentum_score", "fundamental_score", "valuation_score",
+                             "components")
 
 
 def _backfill_ticker(ticker: str, df: pd.DataFrame, start: str, end: str,
@@ -204,36 +203,28 @@ def _run_backfill(weeks: int, tickers: list[str],
 
 
 def _upsert_batches(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -> None:
-    """daily_data PK(date,ticker) 기준 upsert를 배치 단위로 실행한다.
+    """opportunity_scores PK(date,ticker) 기준 upsert를 배치 단위로 실행한다.
 
-    records에는 signals 전용 필드도 섞여 있으므로 daily_data 컬럼만 추려 보낸다.
+    records에는 daily_data 전용 필드(score_version 등)도 섞여 있으므로
+    opportunity_scores 컬럼만 추려 보낸다.
     """
     for i in range(0, len(rows), batch_size):
-        batch = [{k: r[k] for k in DAILY_DATA_COLUMNS} for r in rows[i:i + batch_size]]
-        db.table("daily_data").upsert(batch, on_conflict="date,ticker").execute()
-
-
-def _upsert_signals(db: Any, rows: list[dict], batch_size: int = UPSERT_BATCH) -> None:
-    """signals unique(signal_date,ticker) 기준 upsert를 배치 단위로 실행한다.
-
-    id는 identity PK이므로 본문에 넣지 않는다.
-    """
-    for i in range(0, len(rows), batch_size):
-        db.table("signals").upsert(
-            rows[i:i + batch_size], on_conflict="signal_date,ticker").execute()
+        batch = [{k: r[k] for k in OPPORTUNITY_SCORE_COLUMNS} for r in rows[i:i + batch_size]]
+        db.table("opportunity_scores").upsert(batch, on_conflict="date,ticker").execute()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="과거 daily_data 백필")
+    parser = argparse.ArgumentParser(description="과거 opportunity_scores 백필")
     parser.add_argument("--weeks", type=int, default=52,
                         help="백필 기간 (df 마지막 날짜 기준 최근 N주, 기본 52주)")
     parser.add_argument("--tickers", help="콤마 구분 ticker (지정 시 watchlist 대체)")
     parser.add_argument("--with-signals", dest="with_signals", action="store_true",
-                        default=True, help="신호 승격 (기본 True)")
+                        default=True,
+                        help="(deprecated) V8 백필은 signals 테이블에 저장하지 않음")
     parser.add_argument("--no-signals", dest="with_signals", action="store_false",
-                        help="신호 승격 끄기")
+                        help="(deprecated) V8 백필은 signals 테이블에 저장하지 않음")
     parser.add_argument("--threshold", type=int, default=ALERT_SCORE,
-                        help="신호 임계값 (기본 55)")
+                        help="(deprecated) 신호 승격 제거로 미사용 (CLI 호환용)")
     args = parser.parse_args()
 
     db = _get_db_if_available()
@@ -251,13 +242,7 @@ def main() -> None:
 
     rows = result["records"]
     _upsert_batches(db, rows)
-    signal_count = 0
-    if args.with_signals:
-        signals = _promote_signals(rows, args.threshold)
-        if signals:
-            _upsert_signals(db, signals)
-        signal_count = len(signals)
-    print(f"백필 완료: {len(rows)}행 daily + {signal_count}개 신호 "
+    print(f"백필 완료: {len(rows)}행 opportunity_scores "
           f"({result['start']} ~ {result['end']}, ticker {len(result['tickers'])}개)")
 
 

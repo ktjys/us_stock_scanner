@@ -122,6 +122,31 @@
     return all;
   }
 
+  // ---- opportunity_scores ↔ daily_data(score_version=7) 조인 ----
+  // opportunity_scores 에는 price/rsi/ma20/ma50/close/volume_ratio/
+  // relative_strength_5d/drawdown/prev_rsi 가 없으므로, 동일 (date,ticker) 의
+  // daily_data(score_version=7) 를 별도 fetch 해 병합한다.
+  // oppRows: opportunity_scores 배열 (date, ticker 포함)
+  // 반환: daily_data v7 필드가 보강된 병합 행 배열
+  async function joinDailyV7(oppRows) {
+    if (!oppRows || !oppRows.length) return oppRows || [];
+    var dates = {};
+    oppRows.forEach(function (r) { if (r.date) dates[r.date] = true; });
+    var dateList = Object.keys(dates);
+    if (!dateList.length) return oppRows;
+    var daily = await fetchAllPaged(
+      sb.from("daily_data").select("*").eq("score_version", 7).in("date", dateList)
+    );
+    var map = {};
+    daily.forEach(function (d) { map[d.date + "|" + d.ticker] = d; });
+    return oppRows.map(function (o) {
+      var d = map[o.date + "|" + o.ticker];
+      // daily_data v7 이 우선 채워지고, opportunity_scores 필드(strategy_type/risk_level/
+      // opportunity_score/4축 점수 등)가 덮어쓴다.
+      return d ? Object.assign({}, d, o) : o;
+    });
+  }
+
   // ---- weekly_report.build_report_text 와 동일 통계 ----
   // 평균 = 단순평균, 승률 = 양수비율*100, null 제외
   function computeStats(rows) {
@@ -296,13 +321,12 @@
   // =====================================================================
   async function loadStatus() {
     await runLoad(
-      "daily_data",
+      "opportunity_scores",
       async function () {
-        // 최신 스캔 날짜
+        // 최신 스캔 날짜 (opportunity_scores 기준)
         var dRes = await sb
-          .from("daily_data")
+          .from("opportunity_scores")
           .select("date")
-          .eq("score_version", 8)
           .order("date", { ascending: false })
           .limit(1);
         if (dRes.error) throw dRes.error;
@@ -310,9 +334,11 @@
 
         var rows = [];
         if (latest) {
-          var rRes = await sb.from("daily_data").select("*").eq("date", latest).eq("score_version", 8);
+          var rRes = await sb.from("opportunity_scores").select("*").eq("date", latest);
           if (rRes.error) throw rRes.error;
           rows = rRes.data || [];
+          // 가격/RSI/MA 등은 daily_data(score_version=7) 와 조인
+          rows = await joinDailyV7(rows);
         }
 
         var candidates = rows
@@ -448,13 +474,12 @@
 
   async function loadScoreboardDates() {
     await runLoad(
-      "daily_data(날짜목록)",
+      "opportunity_scores(날짜목록)",
       async function () {
         // 최근 10개 영업일(중복 제거) — date 전용 1000행 조회 후 dedupe
         var res = await sb
-          .from("daily_data")
+          .from("opportunity_scores")
           .select("date")
-          .eq("score_version", 8)
           .order("date", { ascending: false })
           .limit(1000);
         if (res.error) throw res.error;
@@ -486,11 +511,13 @@
   async function loadScoreboardRows(date) {
     if (!date) return;
     await runLoad(
-      "daily_data(" + date + ")",
+      "opportunity_scores(" + date + ")",
       async function () {
-        var res = await sb.from("daily_data").select("*").eq("date", date).eq("score_version", 8);
+        var res = await sb.from("opportunity_scores").select("*").eq("date", date);
         if (res.error) throw res.error;
         sbData = res.data || [];
+        // 가격/RSI/MA 등은 daily_data(score_version=7) 와 조인
+        sbData = await joinDailyV7(sbData);
         renderScoreboard();
         $("scoreboard-content").classList.remove("hidden");
       },
@@ -586,10 +613,10 @@
 
   async function loadHeatmap() {
     await runLoad(
-      "daily_data(히트맵)",
+      "opportunity_scores(히트맵)",
       async function () {
         var rows = await fetchAllPaged(
-          sb.from("daily_data").select("*").eq("score_version", 8).order("date", { ascending: false }).order("ticker", { ascending: true })
+          sb.from("opportunity_scores").select("*").order("date", { ascending: false }).order("ticker", { ascending: true })
         );
         // 최근 10개 날짜 (중복 제거, date desc 상태)
         var seen = {};
@@ -602,7 +629,7 @@
         var map = {};
         rows.forEach(function (r) {
           if (map[r.ticker] === undefined) map[r.ticker] = {};
-          map[r.ticker][r.date] = r.score;
+          map[r.ticker][r.date] = r.opportunity_score;
         });
 
         var tickers = activeTickers.slice();
@@ -702,7 +729,7 @@
 
   async function loadDetail() {
     await runLoad(
-      "daily_data(시계열)",
+      "opportunity_scores+daily_data(시계열)",
       async function () {
         var sel = $("detail-ticker");
         if (!sel.options.length) {
@@ -718,9 +745,26 @@
           return;
         }
 
-        var rows = await fetchAllPaged(
-          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 8).order("date", { ascending: true })
+        // V8 기회점수(opportunity_scores) + 가격/RSI/MA 시계열(daily_data v7) 조인
+        var oppRows = await fetchAllPaged(
+          sb.from("opportunity_scores").select("*").eq("ticker", ticker).order("date", { ascending: true })
         );
+        var dailyRows = await fetchAllPaged(
+          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 7).order("date", { ascending: true })
+        );
+        var omap = {};
+        oppRows.forEach(function (o) { omap[o.date] = o; });
+        var seen = {};
+        var rows = [];
+        dailyRows.forEach(function (d) {
+          seen[d.date] = true;
+          var o = omap[d.date];
+          rows.push(o ? Object.assign({}, d, o) : d);
+        });
+        // opportunity_scores 전용 날짜(가격 없음)도 점수 표시용으로 포함
+        oppRows.forEach(function (o) {
+          if (!seen[o.date]) rows.push(o);
+        });
         var cutoff = dateMinusDays(detailPeriod * 30);
         rows = rows.filter(function (r) { return r.date >= cutoff; });
 
@@ -855,7 +899,7 @@
       return {
         title: "V8 점수",
         datasets: [
-          { label:"점수", data:rows.map(function(r){return r.score;}), borderColor:DETAIL_COLORS.score, yAxisID:"y", borderWidth:2, pointRadius:0, tension:.12, spanGaps:true }
+          { label:"점수", data:rows.map(function(r){return rowScore(r);}), borderColor:DETAIL_COLORS.score, yAxisID:"y", borderWidth:2, pointRadius:0, tension:.12, spanGaps:true }
         ],
         scales: { y:{min:0,max:100,position:"left",title:{display:true,text:"점수"}} }
       };
@@ -953,7 +997,7 @@
       "signals",
       async function () {
         var weeks = parseInt($("signals-period").value, 10);
-        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 8).order("signal_date", { ascending: false }));
+        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 7).order("signal_date", { ascending: false }));
 
         // 기간 필터: 오늘(UTC) - N주, signal_date >= cutoff (문자열 비교)
         if (weeks > 0) {
