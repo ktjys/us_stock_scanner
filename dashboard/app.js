@@ -122,26 +122,26 @@
     return all;
   }
 
-  // ---- opportunity_scores ↔ daily_data(score_version=7) 조인 ----
+  // ---- opportunity_scores ↔ daily_data(score_version=8) 조인 ----
   // opportunity_scores 에는 price/rsi/ma20/ma50/close/volume_ratio/
   // relative_strength_5d/drawdown/prev_rsi 가 없으므로, 동일 (date,ticker) 의
-  // daily_data(score_version=7) 를 별도 fetch 해 병합한다.
+  // daily_data(score_version=8) 를 별도 fetch 해 병합한다.
   // oppRows: opportunity_scores 배열 (date, ticker 포함)
-  // 반환: daily_data v7 필드가 보강된 병합 행 배열
-  async function joinDailyV7(oppRows) {
+  // 반환: daily_data v8 필드가 보강된 병합 행 배열
+  async function joinDailyV8(oppRows) {
     if (!oppRows || !oppRows.length) return oppRows || [];
     var dates = {};
     oppRows.forEach(function (r) { if (r.date) dates[r.date] = true; });
     var dateList = Object.keys(dates);
     if (!dateList.length) return oppRows;
     var daily = await fetchAllPaged(
-      sb.from("daily_data").select("*").eq("score_version", 7).in("date", dateList)
+      sb.from("daily_data").select("*").eq("score_version", 8).in("date", dateList)
     );
     var map = {};
     daily.forEach(function (d) { map[d.date + "|" + d.ticker] = d; });
     return oppRows.map(function (o) {
       var d = map[o.date + "|" + o.ticker];
-      // daily_data v7 이 우선 채워지고, opportunity_scores 필드(strategy_type/risk_level/
+      // daily_data v8 이 우선 채워지고, opportunity_scores 필드(strategy_type/risk_level/
       // opportunity_score/4축 점수 등)가 덮어쓴다.
       return d ? Object.assign({}, d, o) : o;
     });
@@ -341,8 +341,8 @@
           var rRes = await sb.from("opportunity_scores").select("*").eq("date", latest);
           if (rRes.error) throw rRes.error;
           rows = rRes.data || [];
-          // 가격/RSI/MA 등은 daily_data(score_version=7) 와 조인
-          rows = await joinDailyV7(rows);
+        // 가격/RSI/MA 등은 daily_data(score_version=8) 와 조인
+          rows = await joinDailyV8(rows);
         }
 
         var candidates = rows
@@ -520,8 +520,8 @@
         var res = await sb.from("opportunity_scores").select("*").eq("date", date);
         if (res.error) throw res.error;
         sbData = res.data || [];
-        // 가격/RSI/MA 등은 daily_data(score_version=7) 와 조인
-        sbData = await joinDailyV7(sbData);
+        // 가격/RSI/MA 등은 daily_data(score_version=8) 와 조인
+        sbData = await joinDailyV8(sbData);
         renderScoreboard();
         $("scoreboard-content").classList.remove("hidden");
       },
@@ -758,12 +758,12 @@
           return;
         }
 
-        // V8 기회점수(opportunity_scores) + 가격/RSI/MA 시계열(daily_data v7) 조인
+        // V8 기회점수(opportunity_scores) + 가격/RSI/MA 시계열(daily_data v8) 조인
         var oppRows = await fetchAllPaged(
           sb.from("opportunity_scores").select("*").eq("ticker", ticker).order("date", { ascending: true })
         );
         var dailyRows = await fetchAllPaged(
-          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 7).order("date", { ascending: true })
+          sb.from("daily_data").select("*").eq("ticker", ticker).eq("score_version", 8).order("date", { ascending: true })
         );
         var omap = {};
         oppRows.forEach(function (o) { omap[o.date] = o; });
@@ -1010,7 +1010,7 @@
       "signals",
       async function () {
         var weeks = parseInt($("signals-period").value, 10);
-        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 7).order("signal_date", { ascending: false }));
+        var rows = await fetchAllPaged(sb.from("signals").select("*").eq("score_version", 8).order("signal_date", { ascending: false }));
 
         // 기간 필터: 오늘(UTC) - N주, signal_date >= cutoff (문자열 비교)
         if (weeks > 0) {
