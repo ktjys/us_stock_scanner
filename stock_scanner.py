@@ -30,7 +30,7 @@ ALERT_SCORE = 55  # V8: 55-59 밴드가 유일한 기회 구간 (52주 백테스
 # V7 스캐너(Legacy/Baseline) 전용 버전 라벨. daily_data/signals에 저장되며,
 # V8 Opportunity Engine 평가는 opportunity_scores 테이블(score_version 컬럼 없음)을
 # 사용하므로 V8 데이터에는 이 값이 기록되지 않는다.
-SCORE_VERSION = 7
+SCORE_VERSION = 8
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365

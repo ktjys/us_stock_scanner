@@ -182,7 +182,7 @@ def test_save_daily_upsert_payload(monkeypatch):
         "date": "2026-08-13", "ticker": "AAPL", "price": 100.0,
         "rsi": 30.0, "prev_rsi": 35.0, "ma20": 99.0, "ma50": 98.0,
         "drawdown": -12.0, "volume_ratio": 1.5, "score": 80, "relative_strength_5d": 1.5,
-        "score_version": 7, "strategy_type": None, "opportunity_score": None,
+        "score_version": 8, "strategy_type": None, "opportunity_score": None,
         "risk_level": None,
         "technical_score": None, "momentum_score": None,
         "fundamental_score": None, "valuation_score": None,
@@ -207,7 +207,7 @@ def test_save_signal_above_threshold_upsert(monkeypatch):
     save_signal(x, "2026-08-13")
     assert db.calls == [("upsert", "signals", {
         "signal_date": "2026-08-13", "ticker": "AAPL",
-        "signal_price": 100.0, "score": 70, "score_version": 7,
+        "signal_price": 100.0, "score": 70, "score_version": 8,
         "rsi": 30.0, "drawdown": -12.0,
         "strategy_type": None, "opportunity_score": None,
         "risk_level": None, "risk_score": None,
