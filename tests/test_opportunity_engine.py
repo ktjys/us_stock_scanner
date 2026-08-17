@@ -194,6 +194,57 @@ def test_fundamental_components_tiers():
 
 
 # ---------------------------------------------------------------------------
+# 6-1) quality_callback: 핵심 펀더멘털 필드 결측 감지
+# ---------------------------------------------------------------------------
+
+def test_fundamental_components_quality_callback_fires_on_missing_key_fields():
+    calls = []
+
+    def cb(missing, comps):
+        calls.append((missing, comps))
+
+    compute_fundamental_components({"dividendYield": 0.03}, quality_callback=cb)
+    assert len(calls) == 1
+    missing, comps = calls[0]
+    assert missing == ["trailingPE", "profitMargins", "earningsGrowth"]
+    assert comps == {"valuation": 0, "profitability": 0, "dividend": 10, "earnings": 0}
+
+
+def test_fundamental_components_quality_callback_silent_when_all_fields_present():
+    calls = []
+
+    def cb(missing, comps):
+        calls.append((missing, comps))
+
+    compute_fundamental_components(
+        {"trailingPE": 15, "profitMargins": 0.15, "dividendYield": 0.03,
+         "earningsGrowth": 0.2},
+        quality_callback=cb)
+    assert calls == []
+
+
+def test_fundamental_components_quality_callback_silent_when_values_bad_not_missing():
+    """필드가 존재하지만 값이 나쁜 경우(0점)는 '결측'이 아니므로 호출하지 않는다."""
+    calls = []
+
+    def cb(missing, comps):
+        calls.append((missing, comps))
+
+    compute_fundamental_components(
+        {"trailingPE": 100, "priceToSalesTrailing12Months": 25,
+         "profitMargins": -0.1, "dividendYield": 0.03, "earningsGrowth": 0.2},
+        quality_callback=cb)
+    assert calls == []
+
+
+def test_fundamental_components_quality_callback_silent_when_info_none():
+    """info=None은 호출자(fundamental_null 로깅)가 처리하므로 콜백을 부르지 않는다."""
+    calls = []
+    compute_fundamental_components(None, quality_callback=calls.append)
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
 # 7) speculative: 높은 기회 점수 + 높은 리스크 (좋은 기회 ≠ 안전한 투자)
 # ---------------------------------------------------------------------------
 

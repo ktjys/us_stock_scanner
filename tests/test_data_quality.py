@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from stock_scanner import analyze, log_data_quality, scan
+from stock_scanner import (analyze, compute_signal_v8, evaluate_opportunities,
+                           log_data_quality, scan)
 
 
 class _FakeResponse:
@@ -117,3 +118,96 @@ def test_analyze_logs_missing_price(monkeypatch):
     assert table == "data_quality_log"
     assert payload["ticker"] == "AAPL"
     assert payload["issue_type"] == "missing_price"
+
+
+# ---------------------------------------------------------------------------
+# fetch_info()가 None이면 fundamental_null 로깅
+# ---------------------------------------------------------------------------
+
+
+def _recent_df():
+    today = datetime.now(timezone.utc).date()
+    idx = pd.DatetimeIndex([today])
+    return pd.DataFrame({"Close": [100.0], "High": [102.0], "Volume": [1_000_000]},
+                        index=idx)
+
+
+def test_analyze_logs_fundamental_null(monkeypatch):
+    monkeypatch.setattr("stock_scanner.fetch_history", lambda t: _recent_df())
+    monkeypatch.setattr("stock_scanner.fetch_info", lambda t: None)
+    monkeypatch.setattr("stock_scanner.resolve_strategy",
+                        lambda t, db=None, info=None: ("general", 0.5))
+    monkeypatch.setattr("stock_scanner.compute_signal_v8",
+                        lambda t, d, m, s, i, c: {"ticker": t, "score": 0})
+    db = _FakeDb()
+    monkeypatch.setattr("stock_scanner.get_db", lambda: db)
+    analyze("AAPL", db=db)
+    inserts = [c for c in db.calls if c[0] == "insert"]
+    assert len(inserts) == 1
+    _, table, payload = inserts[0]
+    assert table == "data_quality_log"
+    assert payload["ticker"] == "AAPL"
+    assert payload["issue_type"] == "fundamental_null"
+    assert payload["details"] == {"reason": "info_is_none"}
+
+
+def test_evaluate_opportunities_logs_fundamental_null(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr("stock_scanner.get_db", lambda: db)
+    monkeypatch.setattr("stock_scanner.load_watchlist", lambda db=None: ["AAPL"])
+    monkeypatch.setattr("stock_scanner.fetch_history",
+                        lambda t: pd.DataFrame({"Close": [1.0]}))
+    monkeypatch.setattr("stock_scanner.fetch_info", lambda t: None)
+    monkeypatch.setattr("stock_scanner.resolve_strategy",
+                        lambda t, db=None, info=None: ("general", 0.5))
+    monkeypatch.setattr("stock_scanner.compute_signal_v8",
+                        lambda t, d, m, s, i, c: None)
+    monkeypatch.setattr("stock_scanner._market_history",
+                        lambda: pd.DataFrame({"Close": [1.0]}))
+    evaluate_opportunities()
+    inserts = [c for c in db.calls if c[0] == "insert"]
+    assert len(inserts) == 1
+    _, table, payload = inserts[0]
+    assert table == "data_quality_log"
+    assert payload["ticker"] == "AAPL"
+    assert payload["issue_type"] == "fundamental_null"
+    assert payload["details"] == {"reason": "info_is_none"}
+
+
+# ---------------------------------------------------------------------------
+# 핵심 펀더멘털 필드 결측 → fundamental_incomplete 로깅
+# ---------------------------------------------------------------------------
+
+
+def _signal_df():
+    closes = list(range(100, 180))
+    return pd.DataFrame({"Close": closes, "High": [c * 1.01 for c in closes],
+                         "Volume": [1_000_000] * len(closes)})
+
+
+def test_compute_signal_v8_logs_fundamental_incomplete(monkeypatch):
+    logged = []
+
+    def fake_log(t, issue, details=None):
+        logged.append((t, issue, details))
+
+    monkeypatch.setattr("stock_scanner.log_data_quality", fake_log)
+    x = compute_signal_v8("AAPL", _signal_df(), strategy="quality",
+                          info={"dividendYield": 0.02, "earningsGrowth": 0.15},
+                          classification_confidence=1.0)
+    assert x is not None
+    assert logged == [("AAPL", "fundamental_incomplete", {
+        "missing_fields": ["trailingPE", "profitMargins"],
+        "valuation_score": 0,
+        "profitability_score": 0,
+    })]
+
+
+def test_compute_signal_v8_no_fundamental_logging_when_info_none(monkeypatch):
+    logged = []
+    monkeypatch.setattr("stock_scanner.log_data_quality",
+                        lambda t, issue, details=None: logged.append((t, issue, details)))
+    x = compute_signal_v8("AAPL", _signal_df(), strategy="general", info=None,
+                          classification_confidence=1.0)
+    assert x is not None
+    assert logged == []

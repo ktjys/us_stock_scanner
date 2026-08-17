@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
@@ -36,6 +37,10 @@ TECH_COMPONENTS = ["rsi_state", "rsi_rebound", "price_rebound", "drawdown", "ma2
                    "trend", "relative_strength", "volume", "momentum_20d", "breakout"]
 
 FUND_COMPONENTS = ["valuation", "profitability", "dividend", "earnings"]
+
+# Yahoo Finance info에서 펀더멘털 컴포넌트의 핵심 입력 필드 (품질 감시 대상)
+FUNDAMENTAL_KEY_FIELDS = ("trailingPE", "profitMargins", "dividendYield",
+                          "earningsGrowth")
 
 # 전략별 컴포넌트 가중치 (0~3, 확정된 설계안).
 # speculative는 52주 백테스트(2026-08) 후 momentum/breakout 추격 과대평가가
@@ -172,10 +177,18 @@ def compute_technical_components(df: pd.DataFrame, i: int,
     }
 
 
-def compute_fundamental_components(info: dict | None) -> dict[str, int]:
+def compute_fundamental_components(
+    info: dict | None,
+    quality_callback: Callable[[list[str], dict[str, int]], None] | None = None,
+) -> dict[str, int]:
     """Yahoo Finance info dict에서 V8 펀더멘털 컴포넌트 4개 점수를 계산한다.
 
     필드가 없거나 float 변환에 실패하면 해당 컴포넌트는 0점이다.
+
+    quality_callback가 주어지고 valuation/profitability 컴포넌트가 모두 0이면
+    핵심 펀더멘털 필드가 대부분 결측됐다는 뜻이므로, (결측 필드 목록, 컴포넌트
+    점수 dict)를 인자로 호출한다. 값이 존재하지만 나쁜 경우(0점)나 info=None은
+    호출하지 않는다 — info=None은 호출자가 fundamental_null 로깅을 담당한다.
     """
     out = {"valuation": 0, "profitability": 0, "dividend": 0, "earnings": 0}
     if not info:
@@ -244,6 +257,12 @@ def compute_fundamental_components(info: dict | None) -> dict[str, int]:
             out["earnings"] = 4
         else:
             out["earnings"] = 0
+
+    if (quality_callback is not None
+            and out["valuation"] == 0 and out["profitability"] == 0):
+        missing = [f for f in FUNDAMENTAL_KEY_FIELDS if _num(info.get(f)) is None]
+        if missing:
+            quality_callback(missing, out)
 
     return out
 
