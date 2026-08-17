@@ -18,11 +18,13 @@ import pandas as pd
 from stock_scanner import (ALERT_SCORE, SCORE_VERSION, get_db, load_watchlist,
                            fetch_history, rsi, score_signal, _relative_strength_series,
                            resolve_strategy)
-from opportunity_engine import compute_technical_components, opportunity_score
+from opportunity_engine import (compute_technical_components, opportunity_score,
+                                risk_score, signal_confidence)
 
 RET_HORIZONS = (5, 10, 20)
 DEFAULT_THRESHOLDS = "80,75,70,65,60,55,50,45,40"
 SCORE_BANDS = [(40,44),(45,49),(50,54),(55,59),(60,64),(65,69),(70,74),(75,79),(80,100)]
+RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "VERY_HIGH", "UNKNOWN")
 COOLDOWN_DAYS = 5
 
 
@@ -169,6 +171,13 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
                 "ma20", "trend", "relative_strength", "volume")}
             v8_extra = {}
 
+        # 리스크/신뢰도 (info=None: 백테스트에서 Yahoo info 조회는 너무 느려 생략.
+        # risk_score는 info가 없으면 beta를 중간값으로 처리하므로 그대로 점수화된다)
+        risk_result = risk_score(df, i, info=None)
+        risk_total, risk_level = (risk_result if risk_result is not None
+                                  else (None, "UNKNOWN"))
+        confidence = signal_confidence(score)
+
         metrics = _future_metrics(df, i)
         date = str(df.index[i])[:10]
 
@@ -179,6 +188,11 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
             "score": score,
             "score_mode": mode,
             "price": price,
+
+            # 리스크/신뢰도
+            "risk_score": risk_total,
+            "risk_level": risk_level,
+            "signal_confidence": confidence,
 
             # 원본 지표
             "rsi": rv,
@@ -330,8 +344,14 @@ def _score_band(score: int) -> str:
     return "<40"
 
 
-def _summarize_bands(records: list[dict]) -> pd.DataFrame:
-    """V7 점수 구간별(중복 신호 제거 후) 성과 요약."""
+def _summarize_bands(records: list[dict],
+                     strategy_filter: str | None = None) -> pd.DataFrame:
+    """V7 점수 구간별(중복 신호 제거 후) 성과 요약.
+
+    strategy_filter가 주어지면 해당 strategy 신호만 집계한다 (None이면 전체).
+    """
+    if strategy_filter is not None:
+        records = [r for r in records if r.get("strategy") == strategy_filter]
     rows = []
     for lo, hi in SCORE_BANDS:
         label = f"{lo}-{hi}" if hi < 100 else "80+"
@@ -361,6 +381,32 @@ def _summarize_bands(records: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _group_band_summaries(records: list[dict], key: str,
+                          default: str) -> dict[str, list[dict]]:
+    """records를 key 필드 값별로 그룹핑해 점수구간 요약을 만든다.
+
+    key 필드가 없는 레코드는 default로 귀속한다. 반환 형태:
+    {그룹명: _summarize_bands의 행 dict 리스트}.
+    """
+    by_group: dict[str, list[dict]] = {}
+    for r in records:
+        by_group.setdefault(r.get(key) or default, []).append(r)
+    return {
+        group: _summarize_bands(recs).to_dict(orient="records")
+        for group, recs in sorted(by_group.items())
+    }
+
+
+def _summarize_by_strategy(records: list[dict]) -> dict[str, list[dict]]:
+    """전략별 점수구간 요약 (strategy 없음 = general)."""
+    return _group_band_summaries(records, "strategy", "general")
+
+
+def _summarize_by_risk(records: list[dict]) -> dict[str, list[dict]]:
+    """리스크 등급별 점수구간 요약 (risk_level 없음 = UNKNOWN)."""
+    return _group_band_summaries(records, "risk_level", "UNKNOWN")
+
+
 def build_backtest_summary(weeks: int = 26, tickers: str | None = None,
                            mode: str = "v7") -> str:
     """주간 리포트용 V7/V8 점수구간 요약 텍스트."""
@@ -388,10 +434,12 @@ def build_backtest_summary(weeks: int = 26, tickers: str | None = None,
 def _build_json_report(records: list[dict], thresholds: list[int], tickers: list[str],
                        start: str, end: str, weeks: int,
                        raw_records: list[dict] | None = None,
-                       version: str = "v7") -> dict:
+                       version: str = "v7", breakdown: str = "none") -> dict:
     """대시보드용 점수구간 JSON 리포트 (version은 실행된 스코어링 모드).
 
     version="both"면 score_mode별로 분리해 v7/v8 서브리포트를 modes에 담는다.
+    breakdown="strategy"/"all"이면 전략별, "risk"/"all"이면 리스크 등급별
+    점수구간 요약을 by_strategy/by_risk에 추가한다.
     """
     if version == "both":
         per_mode = {}
@@ -399,7 +447,8 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
             m_recs = [r for r in records if r.get("score_mode") == m]
             m_raw = [r for r in (raw_records or []) if r.get("score_mode") == m]
             per_mode[m] = _build_json_report(m_recs, thresholds, tickers, start,
-                                             end, weeks, m_raw, version=m)
+                                             end, weeks, m_raw, version=m,
+                                             breakdown=breakdown)
         return {
             "version": "both",
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -422,7 +471,7 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
          "cooldown_count": r.get("cooldown_count", 1)}
         for r in sorted(uniq.values(), key=lambda r: (r["date"], r["score"]), reverse=True)[:30]
     ]
-    return {
+    report = {
         "version": version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period_start": start,
@@ -438,6 +487,11 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
         "cooldown_signal_count": len(records),
         "raw_records": raw_records or [],
     }
+    if breakdown in ("strategy", "all"):
+        report["by_strategy"] = _summarize_by_strategy(records)
+    if breakdown in ("risk", "all"):
+        report["by_risk"] = _summarize_by_risk(records)
+    return report
 
 
 def main() -> None:
@@ -451,6 +505,9 @@ def main() -> None:
     parser.add_argument("--tickers", help="콤마 구분 ticker (지정 시 watchlist 대체)")
     parser.add_argument("--verbose", action="store_true", help="신호 상세 목록 출력")
     parser.add_argument("--json", default=None, help="결과 JSON 경로")
+    parser.add_argument("--breakdown", choices=["none", "strategy", "risk", "all"],
+                        default="none",
+                        help="전략/리스크 등급별 점수구간 요약 추가 (기본 none)")
     args = parser.parse_args()
 
     thresholds = sorted({int(t) for t in args.thresholds.split(",")}, reverse=True)
@@ -479,11 +536,23 @@ def main() -> None:
     else:
         print(_summarize_bands(result["records"]).to_string(index=False))
 
+    if args.breakdown in ("strategy", "all"):
+        print("\n=== 전략별 점수구간 요약 ===")
+        for strat, band_rows in _summarize_by_strategy(result["records"]).items():
+            print(f"--- {strat} ---")
+            print(pd.DataFrame(band_rows).to_string(index=False))
+
+    if args.breakdown in ("risk", "all"):
+        print("\n=== 리스크 등급별 점수구간 요약 ===")
+        for level, band_rows in _summarize_by_risk(result["records"]).items():
+            print(f"--- {level} ---")
+            print(pd.DataFrame(band_rows).to_string(index=False))
+
     if args.json:
         report = _build_json_report(
             result["records"], thresholds, result["tickers"],
             result["start"], result["end"], args.weeks, result["raw_records"],
-            version=args.mode
+            version=args.mode, breakdown=args.breakdown
         )
         os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
         with open(args.json, "w", encoding="utf-8") as f:
