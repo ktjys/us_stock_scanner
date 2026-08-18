@@ -17,6 +17,9 @@ from typing import Any
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ConnectionError, Timeout
+from urllib3.util.retry import Retry
 import yfinance as yf
 from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
                                     USFederalHolidayCalendar)
@@ -34,7 +37,7 @@ SCORE_VERSION = 8
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
-SCAN_WORKERS = 8  # 종목별 병렬 분석 워커 수 (Yahoo 스로틀링을 겸함)
+SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", "8"))
 
 # V8: Signal 생성이 허용되는 Decision 등급 (evaluate_opportunities 게이트).
 _SIGNAL_DECISIONS = (Decision.OPPORTUNITY, Decision.STRONG_OPPORTUNITY)
@@ -46,6 +49,16 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 _session = requests.Session()
 _session.headers["User-Agent"] = _UA
 
+_retry = Retry(
+    total=3,
+    backoff_factor=1.0,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"],
+    raise_on_status=False,
+)
+_session.mount("https://", HTTPAdapter(max_retries=_retry))
+_session.mount("http://", HTTPAdapter(max_retries=_retry))
+
 
 def get_db() -> Any:
     """지연 초기화되는 Supabase 클라이언트 (import 시 env 변수 불필요)."""
@@ -54,6 +67,20 @@ def get_db() -> Any:
         if _db is None:
             _db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     return _db
+
+
+def _db_retry(fn: Any, retries: int = 3, backoff: float = 2.0) -> Any:
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return fn()
+        except (ConnectionError, Timeout) as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+        except Exception:
+            raise
+    raise last
 
 
 # ---------------------------------------------------------------------------
@@ -386,13 +413,18 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
                 data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
 
 
-def fetch_info(ticker: str) -> dict | None:
-    """Yahoo Finance 메타데이터를 best-effort로 조회한다 (실패 시 None)."""
-    try:
-        info = yf.Ticker(ticker, session=_session).info
-        return info if info else None
-    except Exception:  # noqa: BLE001 - 메타데이터 부재는 스코어링에 치명적이지 않음
-        return None
+def fetch_info(ticker: str, retries: int = 3, backoff: float = 2.0) -> dict | None:
+    """Yahoo Finance 메타데이터를 best-effort로 조회한다 (재시도 포함, 실패 시 None)."""
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            info = yf.Ticker(ticker, session=_session).info
+            return info if info else None
+        except Exception as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+    return None
 
 
 def resolve_strategy(ticker: str, db: Any | None = None,
@@ -498,22 +530,24 @@ def evaluate_opportunities(date: str | None = None,
 
 
 def save_daily(x: dict[str, Any], date: str) -> None:
-    get_db().table("daily_data").upsert({
-        "date": date, "ticker": x["ticker"], "price": x["price"],
-        "rsi": x["rsi"], "prev_rsi": x["prev_rsi"],
-        "ma20": x["ma20"], "ma50": x["ma50"],
-        "drawdown": x["drawdown"], "volume_ratio": x["volume_ratio"],
-        "relative_strength_5d": x.get("relative_strength_5d"),
-        "score": x["score"], "score_version": SCORE_VERSION,
-        "strategy_type": x.get("strategy_type"),
-        "opportunity_score": x.get("opportunity_score"),
-        "risk_level": x.get("risk_level"),
-        "technical_score": x.get("technical_score"),
-        "momentum_score": x.get("momentum_score"),
-        "fundamental_score": x.get("fundamental_score"),
-        "valuation_score": x.get("valuation_score"),
-        "components": x.get("components"),
-    }).execute()
+    def _op():
+        return get_db().table("daily_data").upsert({
+            "date": date, "ticker": x["ticker"], "price": x["price"],
+            "rsi": x["rsi"], "prev_rsi": x["prev_rsi"],
+            "ma20": x["ma20"], "ma50": x["ma50"],
+            "drawdown": x["drawdown"], "volume_ratio": x["volume_ratio"],
+            "relative_strength_5d": x.get("relative_strength_5d"),
+            "score": x["score"], "score_version": SCORE_VERSION,
+            "strategy_type": x.get("strategy_type"),
+            "opportunity_score": x.get("opportunity_score"),
+            "risk_level": x.get("risk_level"),
+            "technical_score": x.get("technical_score"),
+            "momentum_score": x.get("momentum_score"),
+            "fundamental_score": x.get("fundamental_score"),
+            "valuation_score": x.get("valuation_score"),
+            "components": x.get("components"),
+        }).execute()
+    _db_retry(_op)
 
 
 def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> None:
@@ -536,60 +570,57 @@ def save_signal(x: dict[str, Any], date: str, threshold: int = ALERT_SCORE) -> N
         "valuation_score": x.get("valuation_score"),
         "components": x.get("components"),
     }
-    # V8 Phase 4: 신호 생성 시각 / 시장 데이터 기준일 (있는 경우에만 저장)
     if x.get("scanned_at") is not None:
         payload["scanned_at"] = x["scanned_at"]
     data_as_of = x.get("data_as_of") or x.get("data_date")
     if data_as_of is not None:
         payload["data_as_of"] = data_as_of
-    get_db().table("signals").upsert(payload, on_conflict="signal_date,ticker").execute()
+    def _op():
+        return get_db().table("signals").upsert(payload, on_conflict="signal_date,ticker").execute()
+    _db_retry(_op)
 
 
 def save_opportunity_score(x: dict[str, Any], date: str) -> None:
-    """V8 Opportunity Engine 결과를 opportunity_scores 테이블에 저장한다."""
-    get_db().table("opportunity_scores").upsert({
-        "date": date, "ticker": x["ticker"],
-        "strategy_type": x.get("strategy_type"),
-        "opportunity_score": x.get("opportunity_score"),
-        "risk_level": x.get("risk_level"),
-        "risk_score": x.get("risk_score"),
-        "signal_confidence": x.get("signal_confidence"),
-        "classification_confidence": x.get("classification_confidence"),
-        "decision": x.get("decision"),
-        "technical_score": x.get("technical_score"),
-        "momentum_score": x.get("momentum_score"),
-        "fundamental_score": x.get("fundamental_score"),
-        "valuation_score": x.get("valuation_score"),
-        "components": x.get("components"),
-    }, on_conflict="date,ticker").execute()
+    def _op():
+        return get_db().table("opportunity_scores").upsert({
+            "date": date, "ticker": x["ticker"],
+            "strategy_type": x.get("strategy_type"),
+            "opportunity_score": x.get("opportunity_score"),
+            "risk_level": x.get("risk_level"),
+            "risk_score": x.get("risk_score"),
+            "signal_confidence": x.get("signal_confidence"),
+            "classification_confidence": x.get("classification_confidence"),
+            "decision": x.get("decision"),
+            "technical_score": x.get("technical_score"),
+            "momentum_score": x.get("momentum_score"),
+            "fundamental_score": x.get("fundamental_score"),
+            "valuation_score": x.get("valuation_score"),
+            "components": x.get("components"),
+        }, on_conflict="date,ticker").execute()
+    _db_retry(_op)
 
 
 def start_run() -> int:
-    """scan_runs에 실행 시작을 기록하고 run_id를 반환한다.
-
-    started_at은 Supabase 서버 타임스탬프(now())를 사용하고,
-    version은 테이블 기본값(v10)으로 남긴다.
-    """
-    res = (get_db().table("scan_runs")
-           .insert({"started_at": "now()", "status": "running"})
-           .execute())
+    def _op():
+        return (get_db().table("scan_runs")
+                .insert({"started_at": "now()", "status": "running"})
+                .execute())
+    res = _db_retry(_op)
     return res.data[0]["id"]
 
 
 def finish_run(run_id: int, stats: dict[str, Any]) -> None:
-    """scan_runs 실행 결과를 갱신한다.
-
-    stats 키: total, evaluated, signals, failed, status, error_summary
-    """
-    get_db().table("scan_runs").update({
-        "finished_at": "now()",
-        "watchlist_count": stats["total"],
-        "evaluated_count": stats["evaluated"],
-        "signal_count": stats["signals"],
-        "failure_count": stats["failed"],
-        "status": stats["status"],
-        "error_summary": stats.get("error_summary"),
-    }).eq("id", run_id).execute()
+    def _op():
+        return get_db().table("scan_runs").update({
+            "finished_at": "now()",
+            "watchlist_count": stats["total"],
+            "evaluated_count": stats["evaluated"],
+            "signal_count": stats["signals"],
+            "failure_count": stats["failed"],
+            "status": stats["status"],
+            "error_summary": stats.get("error_summary"),
+        }).eq("id", run_id).execute()
+    _db_retry(_op)
 
 
 def _fundamental_incomplete_cb(ticker: str):
@@ -754,14 +785,23 @@ def prune_daily_data(days: int = PRUNE_RETENTION_DAYS) -> int:
 # ---------------------------------------------------------------------------
 
 
-def telegram(msg: str) -> None:
+def telegram(msg: str, retries: int = 3, backoff: float = 2.0) -> None:
     token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat:
         print(msg)
         return
-    r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      data={"chat_id": chat, "text": msg}, timeout=15)
-    r.raise_for_status()
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                              data={"chat_id": chat, "text": msg}, timeout=15)
+            r.raise_for_status()
+            return
+        except Exception as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+    raise last
 
 
 def recent_alert_tickers(db: Any, date: str, tickers: list[str]) -> dict[str, dict[str, Any]]:
@@ -1001,12 +1041,14 @@ def scan(date: str | None = None,
                 if persist:
                     market_date = x.get("data_as_of") or x.get("data_date") or date
                     save_daily(x, market_date)
-                    # V8: opportunity_scores 저장 (모든 종목)
                     save_opportunity_score(x, market_date)
-                    # V8: Decision 기반 Signal 생성 (OPPORTUNITY 이상만)
                     if x.get("decision") in _SIGNAL_DECISIONS:
                         save_signal(x, market_date, threshold=0)
             return ticker, x, None
+        except (ConnectionError, Timeout) as e:
+            if db is not None:
+                log_data_quality(ticker, "connection_error", {"error": str(e)})
+            return ticker, None, e
         except Exception as e:
             if db is not None:
                 log_data_quality(ticker, "api_failure", {"error": str(e)})
