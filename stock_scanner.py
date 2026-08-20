@@ -129,12 +129,9 @@ def fetch_history(ticker: str, retries: int = 5, backoff: float = 2.0) -> pd.Dat
             if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df
-        except (ConnectionError, Timeout, ProtocolError, ConnectTimeoutError) as e:
-            last = e
-            if attempt < retries - 1:
-                time.sleep(backoff ** attempt + random.uniform(0, 1))
         except Exception as e:
             last = e
+            print(f"{ticker} 시도 {attempt+1}/{retries} 실패: {type(e).__name__}: {e}")
             if attempt < retries - 1:
                 time.sleep(backoff ** attempt + random.uniform(0, 1))
     raise RuntimeError(f"{ticker} 데이터 조회 실패 ({retries}회): {last}") from last
@@ -377,12 +374,9 @@ def fetch_info(ticker: str, retries: int = 5, backoff: float = 2.0) -> dict | No
         try:
             info = yf.Ticker(ticker).info
             return info if info else None
-        except (ConnectionError, Timeout, ProtocolError, ConnectTimeoutError) as e:
-            last = e
-            if attempt < retries - 1:
-                time.sleep(backoff ** attempt + random.uniform(0, 1))
         except Exception as e:
             last = e
+            print(f"{ticker} info 시도 {attempt+1}/{retries} 실패: {type(e).__name__}: {e}")
             if attempt < retries - 1:
                 time.sleep(backoff ** attempt + random.uniform(0, 1))
     return None
@@ -986,6 +980,7 @@ def scan(date: str | None = None,
     if is_us_market_holiday(datetime.strptime(date, "%Y-%m-%d").date()):
         print(f"[{date}] 미국 시장 휴일 — 스캔 생략")
         return [], []
+    time.sleep(3)
     db = get_db() if persist else None
     tickers = load_watchlist(db)
     # 스캔 실행 시각 (scanned_at): 한 스캔 전체에 동일 시각 부여 (data_as_of와 구분)
@@ -1077,8 +1072,12 @@ def main() -> None:
         finish_run(run_id, stats)
         raise
     finish_run(run_id, stats)
-    if failures:
-        sys.exit(f"❌ {len(failures)}개 종목 처리 실패: {', '.join(failures)}")
+    total = stats["total"]
+    failed = stats["failed"]
+    if failed and failed >= total:
+        sys.exit(f"❌ 전체 {failed}개 종목 처리 실패")
+    elif failed:
+        print(f"⚠️ {failed}개 종목 실패 (일부 성공)")
 
 
 if __name__ == "__main__":
