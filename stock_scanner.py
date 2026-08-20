@@ -18,9 +18,7 @@ from typing import Any
 
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
-from urllib3.util.retry import Retry
 from urllib3.exceptions import ConnectTimeoutError, ProtocolError
 import yfinance as yf
 from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
@@ -48,19 +46,7 @@ _yf_lock = threading.Lock()
 _yf_last_request = 0.0
 _YF_MIN_INTERVAL = 1.5
 
-_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-_session = requests.Session()
-_session.headers["User-Agent"] = _UA
-
-_retry = Retry(
-    total=5,
-    backoff_factor=2.0,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "POST"],
-    raise_on_status=False,
-)
-_session.mount("https://", HTTPAdapter(max_retries=_retry))
-_session.mount("http://", HTTPAdapter(max_retries=_retry))
+yf.config.network.retries = 3
 
 
 def get_db() -> Any:
@@ -139,7 +125,7 @@ def fetch_history(ticker: str, retries: int = 5, backoff: float = 2.0) -> pd.Dat
     for attempt in range(retries):
         try:
             df = yf.download(ticker, period="1y", interval="1d",
-                             auto_adjust=True, progress=False, session=_session)
+                             auto_adjust=True, progress=False)
             if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df
@@ -389,7 +375,7 @@ def fetch_info(ticker: str, retries: int = 5, backoff: float = 2.0) -> dict | No
     last: Exception | None = None
     for attempt in range(retries):
         try:
-            info = yf.Ticker(ticker, session=_session).info
+            info = yf.Ticker(ticker).info
             return info if info else None
         except (ConnectionError, Timeout, ProtocolError, ConnectTimeoutError) as e:
             last = e
