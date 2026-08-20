@@ -36,13 +36,17 @@ SCORE_VERSION = 8
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
-SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", "4"))
+SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", "2"))
 
 # V8: Signal 생성이 허용되는 Decision 등급 (evaluate_opportunities 게이트).
 _SIGNAL_DECISIONS = (Decision.OPPORTUNITY, Decision.STRONG_OPPORTUNITY)
 
 _db: Any = None
 _db_lock = threading.Lock()
+
+_yf_lock = threading.Lock()
+_yf_last_request = 0.0
+_YF_MIN_INTERVAL = 1.5
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 _session = requests.Session()
@@ -66,6 +70,15 @@ def get_db() -> Any:
         if _db is None:
             _db = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     return _db
+
+
+def _yf_throttle():
+    global _yf_last_request
+    with _yf_lock:
+        elapsed = time.time() - _yf_last_request
+        if elapsed < _YF_MIN_INTERVAL:
+            time.sleep(_YF_MIN_INTERVAL - elapsed)
+        _yf_last_request = time.time()
 
 
 def _db_retry(fn: Any, retries: int = 3, backoff: float = 2.0) -> Any:
@@ -121,6 +134,7 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 def fetch_history(ticker: str, retries: int = 5, backoff: float = 2.0) -> pd.DataFrame:
     """Yahoo Finance에서 1년 일봉 데이터를 받아온다 (재시도 + 지수 백오프 + 지터)."""
+    _yf_throttle()
     last: Exception | None = None
     for attempt in range(retries):
         try:
@@ -371,6 +385,7 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
 
 def fetch_info(ticker: str, retries: int = 5, backoff: float = 2.0) -> dict | None:
     """Yahoo Finance 메타데이터를 best-effort로 조회한다 (재시도 포함, 실패 시 None)."""
+    _yf_throttle()
     last: Exception | None = None
     for attempt in range(retries):
         try:
