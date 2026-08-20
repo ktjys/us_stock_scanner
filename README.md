@@ -57,8 +57,7 @@ Repository → Settings → Secrets and variables → Actions에 등록:
 | dividend_etf | 1 | 1 | 0 | 2 | 2 | 3 | 1 | 0 | 1 | 0 | 1 | 1 | 3 | 0 |
 | income_etf | 1 | 1 | 0 | 2 | 2 | 2 | 1 | 0 | 0 | 0 | 1 | 2 | 3 | 0 |
 
-- `general`(= `other_etf`)은 V7과 **수학적으로 동일한 점수**를 냅니다 (V7 8개 컴포넌트 가중치 1,
-  신규 6개 가중치 0). V7 대비 비교의 대조군입니다.
+- `general`(= `other_etf`)은 신규 6개 컴포넌트 가중치를 0으로 두고, 기존 8개 컴포넌트만으로 점수를 냅니다.
 - 예: speculative는 상대강도/되돌림 반등에, quality는 밸류/수익성/중기추세에 높은 가중치.
 
 ### Risk / Confidence (독립 차원)
@@ -76,12 +75,11 @@ Repository → Settings → Secrets and variables → Actions에 등록:
 # 스캔 (V8 엔진 자동 사용 — 신호는 score_version=8으로 저장)
 ./run_local.sh --no-db --no-telegram
 
-# 백테스트 (V7 vs V8 비교)
-python backtest.py --mode v7 --weeks 26 --json /tmp/bt_v7.json
+# 백테스트 (V8)
 python backtest.py --mode v8 --weeks 26 --json /tmp/bt_v8.json
 
-# V7+V8 동시 실행 (JSON에 modes.v7/v8 서브리포트 포함 — 대시보드 비교용)
-python backtest.py --mode both --weeks 52 --json dashboard/data/backtest.json
+# 백테스트 JSON 생성 (대시보드용)
+python backtest.py --mode v8 --weeks 52 --json dashboard/data/backtest.json
 ```
 
 ### V8 Supabase
@@ -92,7 +90,7 @@ python backtest.py --mode both --weeks 52 --json dashboard/data/backtest.json
 `momentum_score`, `fundamental_score`, `valuation_score`), 컴포넌트 상세(`components` jsonb),
 daily_data에 `strategy_type`, `opportunity_score`, `risk_level`과 동일한 4개 축 점수 +
 `components` jsonb 컬럼을 추가합니다 (idempotent, 재실행 가능).
-새 스캔/백필은 `score_version=8`으로 저장되며, 기존 V7 데이터(`score_version=7`)는 그대로 유지됩니다.
+새 스캔/백필은 `score_version=8`으로 저장됩니다.
 
 대시보드에서 종목 분류(전략군)도 읽으므로 `supabase_dashboard_rls.sql`을 재실행해
 `asset_classification` 읽기 정책을 추가하세요 (이미 실행한 경우에도 idempotent라 재실행 가능).
@@ -104,12 +102,12 @@ daily_data에 `strategy_type`, `opportunity_score`, `risk_level`과 동일한 4�
 - 신호·성과 탭: 전략/리스크/기회점수/판단(BUY·WATCH 배지)/신뢰도 컬럼 + 빈 상태 시 안내(히트맵·현황 이동)
 - 점수판/현황: 전략·리스크 배지, 후보 카드에 판단 표시, 근접 후보 50~54점 기준
 - 상세 탭: 툴팁에 전략/리스크 + 4축 점수(기술/모멘텀/펀더멘털/밸류) 표시
-- 백테스트 탭: `--mode both` 생성 JSON 기준 **V8/V7 버전 토글** (기본 V8, 단일 형식이면 자동 폴백)
+- 백테스트 탭: `--mode v8` 생성 JSON 기준 V8 백테스트 결과 표시
 - 주간 리포트(`report.py`/`send_weekly_report.py`): `score_version=8` 신호만 집계 + V8 백테스트 요약
 
 대시보드/워크플로우는 `score_version=8` 데이터만 조회하므로, 백필 후에는
-`backtest.py --mode both --json dashboard/data/backtest.json`으로 backtest.json을
-다시 생성해야 V8 토글이 동작합니다 (워크플로우가 매주 자동 갱신).
+`backtest.py --mode v8 --json dashboard/data/backtest.json`으로 backtest.json을
+다시 생성해야 V8 백테스트가 반영됩니다 (워크플로우가 매주 자동 갱신).
 
 ## 8. 주의
 기술적 신호는 매수 추천이나 수익을 보장하지 않습니다.

@@ -1098,8 +1098,6 @@
   var backtestChart = null;
   var backtestLoaded = false;
   var backtestData = null;
-  var backtestVersion = "v8";
-  var backtestToggleBound = false;
 
   function loadBacktest() {
     if (backtestLoaded) return;
@@ -1121,26 +1119,13 @@
           emptyEl.classList.remove("hidden");
           return;
         }
-        // version:"both" 형식(modes.v7/v8) 지원, 구버전 단일(v7/v6) 폴백 유지
-        var isBoth = !!(data.modes && (data.modes.v7 || data.modes.v8));
-        var toggle = $("backtest-version-toggle");
-        if (isBoth) {
-          toggle.classList.remove("hidden");
-          // 기본 V8 (V8 데이터가 없으면 V7로 폴백)
-          backtestVersion = (data.modes.v8 && data.modes.v8.bands && data.modes.v8.bands.length) ? "v8" : "v7";
-          var radios = toggle.querySelectorAll('input[name="bt-version"]');
-          radios.forEach(function (r) { r.checked = (r.value === backtestVersion); });
-          bindBacktestToggle();
-        } else {
-          toggle.classList.add("hidden");
-          backtestVersion = null; // 단일 형식
-          if (!data.bands || !data.bands.length) {
-            emptyEl.textContent = "백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
-            emptyEl.classList.remove("hidden");
-            return;
-          }
+        var mode = data.modes ? (data.modes.v8 || null) : data;
+        if (!mode || !mode.bands || !mode.bands.length) {
+          emptyEl.textContent = "백테스트 데이터가 없습니다. GitHub Actions에서 Run Backtest를 실행하세요.";
+          emptyEl.classList.remove("hidden");
+          return;
         }
-        renderBacktest(data, backtestVersion);
+        renderBacktest(data, "v8");
         $("backtest-content").classList.remove("hidden");
       })
       .catch(function () {
@@ -1148,26 +1133,6 @@
         backtestLoaded = false;
         emptyEl.classList.remove("hidden");
       });
-  }
-
-  function bindBacktestToggle() {
-    if (backtestToggleBound) return;
-    backtestToggleBound = true;
-    var toggle = $("backtest-version-toggle");
-    function syncLabels() {
-      toggle.querySelectorAll('input[name="bt-version"]').forEach(function (radio) {
-        radio.parentNode.classList.toggle("active", radio.checked);
-      });
-    }
-    toggle.querySelectorAll('input[name="bt-version"]').forEach(function (radio) {
-      radio.addEventListener("change", function () {
-        if (!this.checked) return;
-        backtestVersion = this.value;
-        syncLabels();
-        renderBacktest(backtestData, backtestVersion);
-      });
-    });
-    syncLabels();
   }
 
   function renderBacktest(data, version) {

@@ -12,7 +12,7 @@ from opportunity_engine import (COMPONENT_MAXES, FUND_COMPONENTS,
                                 compute_technical_components,
                                 opportunity_score, risk_score,
                                 signal_confidence)
-from stock_scanner import _relative_strength_series, rsi, score_signal
+from stock_scanner import _relative_strength_series, rsi
 
 
 # ---------------------------------------------------------------------------
@@ -51,48 +51,6 @@ def _volumes_series(base, last_ratio, n):
 def _flat_market(n):
     """종목 5일 수익률이 그대로 상대강도가 되도록 하는 평탄한 시장."""
     return pd.DataFrame({"Close": [100.0] * n})
-
-
-# ---------------------------------------------------------------------------
-# 1) general 전략 == V7 점수
-# ---------------------------------------------------------------------------
-
-def test_general_equals_v7_score():
-    # 상승 추세 → 눌림 → 반등 패턴 (300행)
-    closes = _linspace(100.0, 150.0, 201)          # 0..200: 상승
-    closes += _linspace(150.0, 132.0, 90)          # 201..290: 눌림
-    closes += [131.5] * 8                          # 291..298: 눌림 바닥
-    closes += [141.0]                              # 299: 반등 (+7.2%)
-    df = _indicator_df(closes)
-    i = len(df) - 1
-
-    components = compute_technical_components(df, i)
-    assert components is not None
-    assert set(components) == set(TECH_COMPONENTS)
-
-    # V7 8개 컴포넌트 합과 score_signal 직접 호출 결과가 일치해야 한다.
-    v7_sum = sum(components[k] for k in
-                 ["rsi_state", "rsi_rebound", "price_rebound", "drawdown",
-                  "ma20", "trend", "relative_strength", "volume"])
-
-    row, prow, p2 = df.iloc[i], df.iloc[i - 1], df.iloc[i - 2]
-    score, cond, details = score_signal(
-        float(row["Close"]), float(row["rsi"]), float(prow["rsi"]),
-        float(row["ma20"]), float(row["ma50"]),
-        (float(row["Close"]) / float(row["high60"]) - 1) * 100,
-        float(row["Volume"]) / float(row["avgvol"]),
-        ma50_prev=float(prow["ma50"]), prev_price=float(prow["Close"]),
-        ma20_prev=float(prow["ma20"]), prev2_rsi=float(p2["rsi"]),
-    )
-    del cond
-    assert v7_sum == score
-    for k in ["rsi_state", "rsi_rebound", "price_rebound", "drawdown",
-              "ma20", "trend", "relative_strength", "volume"]:
-        assert components[k] == details[k]
-
-    # general 전략은 8개 V7 컴포넌트를 동일 가중치로 재정규화 → V7 점수와 동일
-    assert opportunity_score(components, "general") == score
-    assert 0 <= score <= 100
 
 
 # ---------------------------------------------------------------------------

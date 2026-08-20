@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from backfill_daily import _backfill_ticker, _promote_signals
-from stock_scanner import compute_signal
+from stock_scanner import compute_signal_v8
 
 SCHEMA_KEYS = ("date", "ticker", "price", "rsi", "prev_rsi", "ma20", "ma50",
                "drawdown", "volume_ratio", "relative_strength_5d", "score",
@@ -61,9 +61,9 @@ def _make_signal_df():
     }, index=idx)
 
 
-def test_backfill_scores_match_compute_signal_on_valid_data():
+def test_backfill_scores_match_compute_signal_v8_on_valid_data():
     df = _make_df()
-    live = compute_signal("TEST", df)
+    live = compute_signal_v8("TEST", df, strategy="general")
     assert live is not None
     records = _backfill("TEST", df)
     last = [r for r in records if r["date"] == str(df.index[-1].date())]

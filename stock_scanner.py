@@ -7,6 +7,7 @@ ALERT_SCORE 이상인 경우 signals 테이블에 저장한 뒤 Telegram으로 �
 
 import argparse
 import os
+import random
 import sys
 import time
 import threading
@@ -20,6 +21,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
 from urllib3.util.retry import Retry
+from urllib3.exceptions import ConnectTimeoutError, ProtocolError
 import yfinance as yf
 from pandas.tseries.holiday import (AbstractHolidayCalendar, GoodFriday,
                                     USFederalHolidayCalendar)
@@ -29,15 +31,12 @@ from asset_classification import classify_asset
 from decision_engine import Decision, make_decision
 
 WATCHLIST_FILE = "watchlist.csv"
-ALERT_SCORE = 55  # V8: 55-59 밴드가 유일한 기회 구간 (52주 백테스트 검증)
-# V7 스캐너(Legacy/Baseline) 전용 버전 라벨. daily_data/signals에 저장되며,
-# V8 Opportunity Engine 평가는 opportunity_scores 테이블(score_version 컬럼 없음)을
-# 사용하므로 V8 데이터에는 이 값이 기록되지 않는다.
+ALERT_SCORE = 55  # 55-59 밴드가 유일한 기회 구간 (52주 백테스트 검증)
 SCORE_VERSION = 8
 ALERT_COOLDOWN_DAYS = 5
 STALE_DATA_DAYS = 7
 PRUNE_RETENTION_DAYS = 365
-SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", "8"))
+SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", "4"))
 
 # V8: Signal 생성이 허용되는 Decision 등급 (evaluate_opportunities 게이트).
 _SIGNAL_DECISIONS = (Decision.OPPORTUNITY, Decision.STRONG_OPPORTUNITY)
@@ -50,8 +49,8 @@ _session = requests.Session()
 _session.headers["User-Agent"] = _UA
 
 _retry = Retry(
-    total=3,
-    backoff_factor=1.0,
+    total=5,
+    backoff_factor=2.0,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET", "POST"],
     raise_on_status=False,
@@ -120,8 +119,8 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
-def fetch_history(ticker: str, retries: int = 3, backoff: float = 2.0) -> pd.DataFrame:
-    """Yahoo Finance에서 1년 일봉 데이터를 받아온다 (재시도 + 지수 백오프)."""
+def fetch_history(ticker: str, retries: int = 5, backoff: float = 2.0) -> pd.DataFrame:
+    """Yahoo Finance에서 1년 일봉 데이터를 받아온다 (재시도 + 지수 백오프 + 지터)."""
     last: Exception | None = None
     for attempt in range(retries):
         try:
@@ -130,10 +129,14 @@ def fetch_history(ticker: str, retries: int = 3, backoff: float = 2.0) -> pd.Dat
             if not df.empty and isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df
+        except (ConnectionError, Timeout, ProtocolError, ConnectTimeoutError) as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt + random.uniform(0, 1))
         except Exception as e:
             last = e
             if attempt < retries - 1:
-                time.sleep(backoff ** attempt)
+                time.sleep(backoff ** attempt + random.uniform(0, 1))
     raise RuntimeError(f"{ticker} 데이터 조회 실패 ({retries}회): {last}") from last
 
 
@@ -144,10 +147,7 @@ def score_signal(price: float, rv: float, prev: float,
                  ma20_prev: float | None = None,
                  relative_strength_5d: float | None = None,
                  prev2_rsi: float | None = None) -> tuple[int, list[str], dict]:
-    """V7 반등확인형 스코어 (0~100).
-
-    V6 백테스트에서 변별력이 낮았던 '소폭 RSI/가격 상승'의 과대평가를 줄이고,
-    적정 눌림·MA20 회복·상대강도·거래량을 더 중요하게 반영한다.
+    """반등확인형 스코어 (0~100). 기술적 조건 텍스트 생성용.
 
     배점:
       RSI 상태             20
@@ -255,7 +255,7 @@ _market_df_cache_lock = threading.Lock()
 
 
 def _market_history() -> pd.DataFrame:
-    """V7 상대강도 계산용 QQQ 일봉. 프로세스 내 1회 캐시."""
+    """상대강도 계산용 QQQ 일봉. 프로세스 내 1회 캐시."""
     global _market_df_cache
     with _market_df_cache_lock:
         if _market_df_cache is None or _market_df_cache.empty:
@@ -289,58 +289,15 @@ def _relative_strength_5d(df: pd.DataFrame, market_df: pd.DataFrame) -> float | 
     return float(s.iloc[-1])
 
 
-def compute_signal(ticker: str, df: pd.DataFrame,
-                   market_df: pd.DataFrame | None = None) -> dict[str, Any] | None:
-    """가격 데이터프레임에서 V7 신호를 계산한다 (순수 함수)."""
-    if df.empty:
-        return None
-
-    df = df.copy()
-    df["rsi"] = rsi(df["Close"])
-    df["ma20"] = df["Close"].rolling(20).mean()
-    df["ma50"] = df["Close"].rolling(50).mean()
-    df["high60"] = df["High"].rolling(60).max()
-    df["avgvol"] = df["Volume"].rolling(20).mean()
-    df = df.dropna()
-    if len(df) < 3:
-        return None
-
-    a, b, c = df.iloc[-1], df.iloc[-2], df.iloc[-3]
-    price = float(a["Close"])
-    rv = float(a["rsi"])
-    prev = float(b["rsi"])
-    ma20 = float(a["ma20"])
-    ma50 = float(a["ma50"])
-    ma50_prev = float(b["ma50"])
-    ma20_prev = float(b["ma20"])
-    dd = (price / float(a["high60"]) - 1) * 100
-    vr = float(a["Volume"]) / float(a["avgvol"])
-    prev_price = float(b["Close"])
-    rs5 = _relative_strength_5d(df, market_df) if market_df is not None else None
-
-    score, cond, _ = score_signal(
-        price, rv, prev, ma20, ma50, dd, vr,
-        ma50_prev=ma50_prev, prev_price=prev_price,
-        ma20_prev=ma20_prev, relative_strength_5d=rs5,
-        prev2_rsi=float(c["rsi"]),
-    )
-    return dict(ticker=ticker, price=price, rsi=rv, prev_rsi=prev, prev2_rsi=float(c["rsi"]),
-                ma20=ma20, ma50=ma50, drawdown=dd,
-                volume_ratio=vr, relative_strength_5d=rs5,
-                score=score, conditions=cond,
-                score_version=SCORE_VERSION,
-                data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
-
-
 def compute_signal_v8(ticker: str, df: pd.DataFrame,
                       market_df: pd.DataFrame | None = None,
                       strategy: str = "general",
                       info: dict | None = None,
                       classification_confidence: float = 0.5) -> dict[str, Any] | None:
-    """가격 데이터프레임에서 V8 전략 인식 신호를 계산한다 (순수 함수).
+    """가격 데이터프레임에서 전략 인식 신호를 계산한다 (순수 함수).
 
     opportunity_engine의 전략별 가중치로 opportunity_score를 산출하고
-    risk_level/신뢰도를 함께 반환한다. V7 compute_signal()은 그대로 유지된다.
+    risk_level/신뢰도를 함께 반환한다.
 
     펀더멘털 info가 부분 결측이면 _fundamental_incomplete_cb가
     log_data_quality("fundamental_incomplete")를 best-effort로 기록한다
@@ -387,8 +344,7 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
     subs = component_sub_scores(comps)
     decision = make_decision(oscore, rlevel, conf, strategy, classification_confidence)
 
-    # 알림 메시지의 기술적 조건 텍스트는 V7 조건문을 그대로 사용한다
-    # (V8 전략별 스코어링과 무관하게 동작하는 표시용 정보).
+    # 알림 메시지의 기술적 조건 텍스트는 표시용으로 생성한다.
     _, cond, _ = score_signal(
         price, rv, prev, ma20, ma50, dd, vr,
         ma50_prev=float(b["ma50"]), prev_price=float(b["Close"]),
@@ -413,17 +369,21 @@ def compute_signal_v8(ticker: str, df: pd.DataFrame,
                 data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])[:10])
 
 
-def fetch_info(ticker: str, retries: int = 3, backoff: float = 2.0) -> dict | None:
+def fetch_info(ticker: str, retries: int = 5, backoff: float = 2.0) -> dict | None:
     """Yahoo Finance 메타데이터를 best-effort로 조회한다 (재시도 포함, 실패 시 None)."""
     last: Exception | None = None
     for attempt in range(retries):
         try:
             info = yf.Ticker(ticker, session=_session).info
             return info if info else None
+        except (ConnectionError, Timeout, ProtocolError, ConnectTimeoutError) as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt + random.uniform(0, 1))
         except Exception as e:
             last = e
             if attempt < retries - 1:
-                time.sleep(backoff ** attempt)
+                time.sleep(backoff ** attempt + random.uniform(0, 1))
     return None
 
 
@@ -457,10 +417,9 @@ def resolve_strategy(ticker: str, db: Any | None = None,
 
 def analyze(ticker: str, date: str | None = None,
             db: Any | None = None) -> dict[str, Any] | None:
-    """ticker의 데이터를 받아 V8 신호를 계산한다.
+    """ticker의 데이터를 받아 신호를 계산한다.
 
-    Yahoo 가격 데이터를 받아 V8 전략별 Opportunity Score를 산출한다.
-    V7 compute_signal()은 backtest 비교용으로만 유지된다.
+    Yahoo 가격 데이터를 받아 전략별 Opportunity Score를 산출한다.
     """
     df = fetch_history(ticker)
     if df.empty:
@@ -487,11 +446,9 @@ def analyze(ticker: str, date: str | None = None,
 
 def evaluate_opportunities(date: str | None = None,
                            persist: bool = True) -> list[dict[str, Any]]:
-    """21개 watchlist 전부를 V8 Opportunity Engine으로 평가한다.
+    """21개 watchlist 전부를 Opportunity Engine으로 평가한다.
 
-    스캐너(V7 후보 선별)와 분리된 경로로, 모든 종목의
-    Opportunity/Risk 점수를 opportunity_scores 테이블에 저장한다.
-    Phase 3 알림은 이 결과를 사용한다.
+    모든 종목의 Opportunity/Risk 점수를 opportunity_scores 테이블에 저장한다.
     """
     date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     db = get_db() if persist else None
@@ -512,8 +469,8 @@ def evaluate_opportunities(date: str | None = None,
             if persist:
                 market_date = x.get("data_as_of") or x.get("data_date") or date
                 save_opportunity_score(x, market_date)
-                # V8 spec §8: Decision이 알림 조건일 때만 Signal 생성 (threshold=0으로
-                # V7 ALERT_SCORE 우회 — general OPPORTUNITY는 40점부터 가능).
+                # Decision이 알림 조건일 때만 Signal 생성 (threshold=0으로
+                # general OPPORTUNITY는 40점부터 가능).
                 if x.get("decision") in _SIGNAL_DECISIONS:
                     save_signal(x, market_date, threshold=0)
             results.append(x)

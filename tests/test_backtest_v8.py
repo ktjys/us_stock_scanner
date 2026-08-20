@@ -1,4 +1,4 @@
-"""V8 백테스트 모드 (--mode v8) 테스트: 전략별 스코어링 정합성."""
+"""V8 백테스트 모드 테스트: 전략별 스코어링 정합성."""
 
 import random
 
@@ -25,7 +25,7 @@ def _make_df(n=120, daily=0.01, seed=1):
     }, index=idx)
 
 
-def _backtest(ticker, df, mode="v7", strategy="general"):
+def _backtest(ticker, df, mode="v8", strategy="general"):
     start = str(df.index[0].date())
     end = str(df.index[-1].date())
     return _backtest_ticker(ticker, df, [0], start, end, mode=mode, strategy=strategy)
@@ -35,27 +35,15 @@ def _last(records):
     return [r for r in records if r["date"] == str(records[-1]["date"])][0]
 
 
-def test_v8_general_equals_v7_score_on_same_rows():
+def test_v8_general_record_schema():
     df = _make_df()
-    v7 = _backtest("TEST", df, mode="v7")
     v8 = _backtest("TEST", df, mode="v8", strategy="general")
-    by_date = {r["date"]: r["score"] for r in v7}
-    assert by_date == {r["date"]: r["score"] for r in v8}
-
-
-def test_v8_general_record_matches_v7_field_schema():
-    df = _make_df()
-    v7 = _backtest("TEST", df, mode="v7")
-    v8 = _backtest("TEST", df, mode="v8", strategy="general")
-    last_v7 = _last(v7)
     last_v8 = _last(v8)
     assert last_v8["ticker"] == "TEST"
     assert last_v8["strategy"] == "general"
     assert last_v8["momentum_20d_score"] == 10
     assert last_v8["breakout_score"] == 10
-    assert last_v8["rsi_state_score"] == last_v7["rsi_state_score"]
-    assert "strategy" not in last_v7
-    assert "momentum_20d_score" not in last_v7
+    assert last_v8["rsi_state_score"] >= 0
 
 
 def test_v8_speculative_scores_above_general_on_uptrend():
@@ -94,32 +82,10 @@ def test_json_report_version_reflects_mode():
     assert report["version"] == "v8"
 
 
-def test_json_report_both_mode_splits_by_score_mode():
-    records = [
-        {"date": "2026-01-05", "ticker": "AAPL", "score": 70,
-         "score_mode": "v7", "ret5": 1.0, "ret10": 2.0, "ret20": 3.0,
-         "mae5": -1.0, "mfe5": 2.0, "cooldown_count": 1},
-        {"date": "2026-01-05", "ticker": "AAPL", "score": 75,
-         "score_mode": "v8", "ret5": 1.5, "ret10": 2.5, "ret20": 3.5,
-         "mae5": -1.0, "mfe5": 2.0, "cooldown_count": 1},
-    ]
-    report = _build_json_report(records, [80], ["AAPL"], "2026-01-01",
-                                "2026-02-01", 4, raw_records=records,
-                                version="both")
-    assert report["version"] == "both"
-    assert set(report["modes"]) == {"v7", "v8"}
-    assert report["modes"]["v7"]["cooldown_signal_count"] == 1
-    assert report["modes"]["v8"]["cooldown_signal_count"] == 1
-    assert report["modes"]["v7"]["raw_records"][0]["score"] == 70
-    assert report["modes"]["v8"]["raw_records"][0]["score"] == 75
-
-
 def test_backtest_ticker_records_tag_score_mode():
     df = _make_df()
     v8 = _backtest("TEST", df, mode="v8", strategy="general")
     assert all(r["score_mode"] == "v8" for r in v8)
-    v7 = _backtest("TEST", df, mode="v7")
-    assert all(r["score_mode"] == "v7" for r in v7)
 
 
 def _band_records():
@@ -248,6 +214,3 @@ def test_backtest_ticker_records_include_risk_fields():
     assert "risk_score" in v8
     assert v8["risk_level"] in ("LOW", "MEDIUM", "HIGH", "VERY_HIGH", "UNKNOWN")
     assert 0 <= v8["signal_confidence"] <= 1.0
-    v7 = _last(_backtest("TEST", df, mode="v7"))
-    assert "risk_level" in v7
-    assert "signal_confidence" in v7

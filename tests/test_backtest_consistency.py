@@ -1,11 +1,11 @@
-"""백테스트 스코어링 정합성 테스트 (실전 compute_signal과 동일 dropna 조건)."""
+"""백테스트 스코어링 정합성 테스트 (실전 compute_signal_v8과 동일 dropna 조건)."""
 
 import random
 
 import pandas as pd
 
 from backtest import _backtest_ticker
-from stock_scanner import compute_signal
+from stock_scanner import compute_signal_v8
 
 
 def _make_df(n=100, seed=42):
@@ -29,9 +29,9 @@ def _backtest(ticker, df, thresholds=(0,)):
     return _backtest_ticker(ticker, df, list(thresholds), start, end)
 
 
-def test_backtest_scores_match_compute_signal_on_valid_data():
+def test_backtest_scores_match_compute_signal_v8_on_valid_data():
     df = _make_df()
-    live = compute_signal("TEST", df)
+    live = compute_signal_v8("TEST", df, strategy="general")
     assert live is not None
     records = _backtest("TEST", df)
     last = [r for r in records if r["date"] == str(df.index[-1].date())]

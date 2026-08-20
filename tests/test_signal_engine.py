@@ -100,15 +100,6 @@ def test_should_generate_signal_blocks_decision_downgrade():
     assert reason == "no_improvement"
 
 
-def test_should_generate_signal_uses_score_fallback_for_v7():
-    """V7 신호(opportunity_score 없음)는 score 필드로 비교한다."""
-    engine = SignalEngine()
-    prev = {"decision": "OPPORTUNITY", "score": 70 - SCORE_IMPROVEMENT_THRESHOLD}
-    ok, reason = engine.should_generate_signal(_evaluation(), prev)
-    assert ok is True
-    assert reason == "score_improved"
-
-
 def test_decision_rank_ordering():
     assert _DECISION_RANK["STRONG_OPPORTUNITY"] > _DECISION_RANK["OPPORTUNITY"]
     assert _DECISION_RANK["OPPORTUNITY"] > _DECISION_RANK["WATCH"]

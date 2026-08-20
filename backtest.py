@@ -1,7 +1,7 @@
 """과거 기간 threshold별 백테스트 도구.
 
-stock_scanner.py의 fetch_history/rsi/score_signal을 재사용해, watchlist 종목의
-1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤 V7 행 단위로 스코어링한다.
+stock_scanner.py의 fetch_history/rsi를 재사용해, watchlist 종목의
+1년 히스토리를 1회 fetch하고 지표를 미리 계산한 뒤 V8 행 단위로 스코어링한다.
 모든 스코어링은 해당 행까지의 데이터만 사용하므로 lookahead bias가 없다.
 stdout에는 결과 테이블만, 진행 로그/경고는 stderr로 출력한다.
 """
@@ -15,9 +15,8 @@ from typing import Any
 
 import pandas as pd
 
-from stock_scanner import (ALERT_SCORE, SCORE_VERSION, get_db, load_watchlist,
-                           fetch_history, rsi, score_signal, _relative_strength_series,
-                           resolve_strategy)
+from stock_scanner import (get_db, load_watchlist, fetch_history, rsi,
+                           _relative_strength_series, resolve_strategy)
 from opportunity_engine import (compute_technical_components, opportunity_score,
                                 risk_score, signal_confidence)
 
@@ -164,13 +163,13 @@ def _future_metrics(df: pd.DataFrame, idx: int) -> dict[int, dict[str, float | N
 def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
                      start: str, end: str,
                      market_df: pd.DataFrame | None = None,
-                     mode: str = "v7", strategy: str = "general",
+                     mode: str = "v8", strategy: str = "general",
                      db: Any | None = None) -> list[dict]:
     """한 ticker를 행 단위로 순회한다.
 
     thresholds의 최소값 이상인 점수만 기록하되, 한 날짜에는 한 건만 기록한다.
     이후 _apply_cooldown에서 실전형 중복 신호를 제거한다.
-    mode="v8"이면 전략(strategy)별 opportunity_score로 스코어링한다.
+    전략(strategy)별 opportunity_score로 스코어링한다.
     """
     df = _compute_indicators(df)
     if df.empty:
@@ -206,43 +205,26 @@ def _backtest_ticker(ticker: str, df: pd.DataFrame, thresholds: list[int],
         price = float(close.iloc[i])
         rv = float(df["rsi"].iloc[i])
         prev = float(df["rsi"].iloc[i - 1])
-        prev2 = float(df["rsi"].iloc[i - 2])
         ma20 = float(df["ma20"].iloc[i])
         ma50 = float(df["ma50"].iloc[i])
         dd = (price / float(df["high60"].iloc[i]) - 1) * 100
         vr = float(df["Volume"].iloc[i]) / float(df["avgvol"].iloc[i])
-        ma50_prev = float(df["ma50"].iloc[i - 1])
-        ma20_prev = float(df["ma20"].iloc[i - 1])
-        prev_price = float(close.iloc[i - 1])
         rs5 = None if pd.isna(rs_series.iloc[i]) else float(rs_series.iloc[i])
 
-        if mode == "v8":
-            comps = compute_technical_components(df, i, market_df, rs_series=rs_series)
-            if comps is None:
-                continue
-            score = opportunity_score(comps, strategy)
-            if score < min_score:
-                continue
-            score_keys = {name + "_score": comps[name] for name in (
-                "rsi_state", "rsi_rebound", "price_rebound", "drawdown",
-                "ma20", "trend", "relative_strength", "volume")}
-            v8_extra: dict[str, Any] = {
-                "momentum_20d_score": comps["momentum_20d"],
-                "breakout_score": comps["breakout"],
-                "strategy": strategy,
-            }
-        else:
-            score, _, details = score_signal(
-                price, rv, prev, ma20, ma50, dd, vr,
-                ma50_prev=ma50_prev, prev_price=prev_price,
-                ma20_prev=ma20_prev, relative_strength_5d=rs5, prev2_rsi=prev2
-            )
-            if score < min_score:
-                continue
-            score_keys = {name + "_score": details[name] for name in (
-                "rsi_state", "rsi_rebound", "price_rebound", "drawdown",
-                "ma20", "trend", "relative_strength", "volume")}
-            v8_extra = {}
+        comps = compute_technical_components(df, i, market_df, rs_series=rs_series)
+        if comps is None:
+            continue
+        score = opportunity_score(comps, strategy)
+        if score < min_score:
+            continue
+        score_keys = {name + "_score": comps[name] for name in (
+            "rsi_state", "rsi_rebound", "price_rebound", "drawdown",
+            "ma20", "trend", "relative_strength", "volume")}
+        v8_extra: dict[str, Any] = {
+            "momentum_20d_score": comps["momentum_20d"],
+            "breakout_score": comps["breakout"],
+            "strategy": strategy,
+        }
 
         # 리스크/신뢰도 (info=None: 백테스트에서 Yahoo info 조회는 너무 느려 생략.
         # risk_score는 info가 없으면 beta를 중간값으로 처리하므로 그대로 점수화된다)
@@ -333,10 +315,10 @@ def _apply_cooldown(records: list[dict], cooldown_days: int = COOLDOWN_DAYS) -> 
 
 
 def _run_backtest(thresholds: list[int], weeks: int,
-                  tickers: list[str], mode: str = "v7",
+                  tickers: list[str], mode: str = "v8",
                   db: Any | None = None) -> dict:
-    """fetch + V7/V8 백테스트. QQQ 상대강도와 5일 cooldown을 함께 적용한다."""
-    if mode in ("v8", "both") and db is None:
+    """fetch + V8 백테스트. QQQ 상대강도와 5일 cooldown을 함께 적용한다."""
+    if db is None:
         db = _get_db_if_available()
     dfs: dict[str, pd.DataFrame] = {}
     try:
@@ -366,33 +348,13 @@ def _run_backtest(thresholds: list[int], weeks: int,
 
     raw_records: list[dict] = []
     for ticker, df in dfs.items():
-        if mode == "both":
-            strategy, _ = resolve_strategy(ticker, db)
-            raw_records.extend(_backtest_ticker(
-                ticker, df, thresholds, start_str, end_str, market_df,
-                mode="v7", strategy="general",
-            ))
-            raw_records.extend(_backtest_ticker(
-                ticker, df, thresholds, start_str, end_str, market_df,
-                mode="v8", strategy=strategy,
-            ))
-        else:
-            strategy = "general"
-            if mode == "v8":
-                strategy, _ = resolve_strategy(ticker, db)
-            raw_records.extend(_backtest_ticker(
-                ticker, df, thresholds, start_str, end_str, market_df,
-                mode=mode, strategy=strategy,
-            ))
+        strategy, _ = resolve_strategy(ticker, db)
+        raw_records.extend(_backtest_ticker(
+            ticker, df, thresholds, start_str, end_str, market_df,
+            mode=mode, strategy=strategy,
+        ))
 
-    if mode == "both":
-        records = []
-        for m in ("v7", "v8"):
-            records.extend(_apply_cooldown(
-                [r for r in raw_records if r["score_mode"] == m], COOLDOWN_DAYS))
-        records.sort(key=lambda r: (r["date"], r["ticker"]))
-    else:
-        records = _apply_cooldown(raw_records, COOLDOWN_DAYS)
+    records = _apply_cooldown(raw_records, COOLDOWN_DAYS)
     return {"records": records, "raw_records": raw_records,
             "tickers": list(dfs), "start": start_str,
             "end": end_str, "weeks": weeks}
@@ -419,7 +381,7 @@ def _score_band(score: int) -> str:
 
 def _summarize_bands(records: list[dict],
                      strategy_filter: str | None = None) -> pd.DataFrame:
-    """V7 점수 구간별(중복 신호 제거 후) 성과 요약.
+    """점수 구간별(중복 신호 제거 후) 성과 요약.
 
     strategy_filter가 주어지면 해당 strategy 신호만 집계한다 (None이면 전체).
     """
@@ -563,15 +525,15 @@ def walk_forward_validation(
 
 
 def build_backtest_summary(weeks: int = 26, tickers: str | None = None,
-                           mode: str = "v7") -> str:
-    """주간 리포트용 V7/V8 점수구간 요약 텍스트."""
+                           mode: str = "v8") -> str:
+    """주간 리포트용 V8 점수구간 요약 텍스트."""
     try:
         thresholds = sorted({int(t) for t in DEFAULT_THRESHOLDS.split(",")}, reverse=True)
         db = _get_db_if_available()
         result = _run_backtest(thresholds, weeks, _load_tickers(tickers, db), mode=mode, db=db)
         if not result["tickers"]:
             return "백테스트 데이터 없음"
-        label = "V8" if mode == "v8" else "V7"
+        label = "V8"
         lines = [f"📊 {label} 백테스트 (최근 {weeks}주, {len(result['tickers'])}종목, cooldown {COOLDOWN_DAYS}일)"]
         for _, row in _summarize_bands(result["records"]).iterrows():
             win = row["win_rate"]
@@ -589,32 +551,12 @@ def build_backtest_summary(weeks: int = 26, tickers: str | None = None,
 def _build_json_report(records: list[dict], thresholds: list[int], tickers: list[str],
                        start: str, end: str, weeks: int,
                        raw_records: list[dict] | None = None,
-                       version: str = "v7", breakdown: str = "none") -> dict:
+                       version: str = "v8", breakdown: str = "none") -> dict:
     """대시보드용 점수구간 JSON 리포트 (version은 실행된 스코어링 모드).
 
-    version="both"면 score_mode별로 분리해 v7/v8 서브리포트를 modes에 담는다.
     breakdown="strategy"/"all"이면 전략별, "risk"/"all"이면 리스크 등급별
     점수구간 요약을 by_strategy/by_risk에 추가한다.
     """
-    if version == "both":
-        per_mode = {}
-        for m in ("v7", "v8"):
-            m_recs = [r for r in records if r.get("score_mode") == m]
-            m_raw = [r for r in (raw_records or []) if r.get("score_mode") == m]
-            per_mode[m] = _build_json_report(m_recs, thresholds, tickers, start,
-                                             end, weeks, m_raw, version=m,
-                                             breakdown=breakdown)
-        return {
-            "version": "both",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "period_start": start,
-            "period_end": end,
-            "weeks": weeks,
-            "ticker_count": len(tickers),
-            "tickers": tickers,
-            "cooldown_days": COOLDOWN_DAYS,
-            "modes": per_mode,
-        }
     bands = _summarize_bands(records).to_dict(orient="records")
     uniq = {}
     for r in sorted(records, key=lambda r: (r["date"], r["ticker"], -r["score"])):
@@ -650,9 +592,7 @@ def _build_json_report(records: list[dict], thresholds: list[int], tickers: list
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="V7/V8 점수구간 백테스트")
-    parser.add_argument("--mode", choices=["v7", "v8", "both"], default="v7",
-                        help="스코어링 모드 (기본 v7, both는 동시 실행)")
+    parser = argparse.ArgumentParser(description="V8 점수구간 백테스트")
     parser.add_argument("--thresholds", default=DEFAULT_THRESHOLDS,
                         help="최저 스코어 필터로 사용할 임계값 목록 (기본 40~80)")
     parser.add_argument("--weeks", type=int, default=52,
@@ -672,24 +612,15 @@ def main() -> None:
     db = _get_db_if_available()
     tickers = _load_tickers(args.tickers, db)
     print(f"백테스트 대상 {len(tickers)}개: {', '.join(tickers)}", file=sys.stderr)
-    result = _run_backtest(thresholds, args.weeks, tickers, mode=args.mode, db=db)
+    result = _run_backtest(thresholds, args.weeks, tickers, db=db)
 
     if not result["tickers"]:
         print("백테스트할 데이터 없음", file=sys.stderr)
         sys.exit(1)
 
-    labels = {"v7": "V7", "v8": "V8", "both": "V7+V8"}
-    label = labels[args.mode]
-    print(f"=== {label} 백테스트 결과 ({result['start']} ~ {result['end']}, "
+    print(f"=== V8 백테스트 결과 ({result['start']} ~ {result['end']}, "
           f"ticker {len(result['tickers'])}개, cooldown {COOLDOWN_DAYS}일) ===")
-    if args.mode == "both":
-        for m in ("v7", "v8"):
-            m_label = "V8" if m == "v8" else "V7"
-            m_records = [r for r in result["records"] if r["score_mode"] == m]
-            print(f"--- {m_label} ---")
-            print(_summarize_bands(m_records).to_string(index=False))
-    else:
-        print(_summarize_bands(result["records"]).to_string(index=False))
+    print(_summarize_bands(result["records"]).to_string(index=False))
 
     if args.breakdown in ("strategy", "all"):
         print("\n=== 전략별 점수구간 요약 ===")
@@ -707,7 +638,7 @@ def main() -> None:
         report = _build_json_report(
             result["records"], thresholds, result["tickers"],
             result["start"], result["end"], args.weeks, result["raw_records"],
-            version=args.mode, breakdown=args.breakdown
+            version="v8", breakdown=args.breakdown
         )
         os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
         with open(args.json, "w", encoding="utf-8") as f:
@@ -717,7 +648,7 @@ def main() -> None:
     if args.verbose:
         detail = pd.DataFrame([
             {"날짜": r["date"], "ticker": r["ticker"], "점수": r["score"],
-             "모드": "V8" if r.get("score_mode") == "v8" else "V7",
+             "모드": "V8",
              "구간": _score_band(r["score"]),
              "5일": _fmt_ret(r["ret5"]), "10일": _fmt_ret(r["ret10"]),
              "20일": _fmt_ret(r["ret20"]),

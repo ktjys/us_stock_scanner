@@ -3,8 +3,8 @@
 import pandas as pd
 import pytest
 
-from stock_scanner import (compute_signal, filter_recent_alerts,
-                           recent_alert_tickers, rsi, score_signal)
+from stock_scanner import (compute_signal_v8, filter_recent_alerts,
+                           recent_alert_tickers, rsi)
 
 
 def _df(closes, highs=None, volumes=None):
@@ -50,67 +50,18 @@ def test_rsi_seed_matches_hand_computed_wilder():
 
 
 # ---------------------------------------------------------------------------
-# V7 스코어링
+# compute_signal_v8
 # ---------------------------------------------------------------------------
 
 
-def test_rsi_tiers_are_exclusive():
-    # RSI 37 → 15점 + 얕은눌림(-2%) → 4점 = 19점 (V7 배점)
-    score, cond, details = score_signal(100.0, 37.0, 37.0, 110.0, 120.0, -2.0, 1.0)
-    assert score == 25
-    assert cond == ["RSI30~40", "얕은눌림"]
-    assert details["rsi_state"] == 20
-    assert details["drawdown"] == 5
+def test_compute_signal_v8_returns_none_on_empty():
+    assert compute_signal_v8("AAPL", pd.DataFrame()) is None
 
 
-def test_rsi_rebound_is_stronger_with_larger_delta():
-    weak, _, _ = score_signal(100, 31, 30, 110, 120, -2, 1, prev2_rsi=29)
-    strong, _, _ = score_signal(100, 35, 29, 110, 120, -2, 1, prev2_rsi=28)
-    assert strong > weak
-
-
-def test_deep_crash_is_not_maximally_rewarded():
-    moderate, _, _ = score_signal(100, 32, 30, 110, 120, -15, 1)
-    crash, _, _ = score_signal(100, 32, 30, 110, 120, -35, 1)
-    assert moderate > crash
-
-
-def test_uptrend_adds_more_points_than_broken_trend():
-    healthy, _, _ = score_signal(
-        100, 32, 30, 100, 95, -12, 1.5, ma50_prev=94, prev_price=98, prev2_rsi=29
-    )
-    broken, _, _ = score_signal(
-        80, 32, 30, 90, 100, -12, 1.5, ma50_prev=101, prev_price=82, prev2_rsi=29
-    )
-    assert healthy > broken
-
-
-def test_full_combo_v7_max_score():
-    # RSI20 + RSI반등15 + 가격반등15 + 적정눌림15 + MA20회복15
-    # + 상승추세5 + QQQ대비10 + 반등+거래량5 = 100
-    score, cond, details = score_signal(
-        100.0, 32.0, 26.0, 99.0, 90.0, -15.0, 1.7,
-        ma50_prev=89.0, prev_price=98.0, ma20_prev=101.0,
-        relative_strength_5d=3.0, prev2_rsi=25.0
-    )
-    assert score == 100
-    assert len(cond) == 8
-    assert sum(details.values()) == 100
-
-
-# ---------------------------------------------------------------------------
-# compute_signal
-# ---------------------------------------------------------------------------
-
-
-def test_compute_signal_returns_none_on_empty():
-    assert compute_signal("AAPL", pd.DataFrame()) is None
-
-
-def test_compute_signal_structure_and_bounds():
+def test_compute_signal_v8_structure_and_bounds():
     closes = [100 * (1 + 0.001 * i) for i in range(300)]
     crash = [closes[-1] * (1 - 0.06 * (i + 1)) for i in range(5)]
-    result = compute_signal("TEST", _df(closes[:-5] + crash))
+    result = compute_signal_v8("TEST", _df(closes[:-5] + crash), strategy="general")
     assert result is not None
     assert result["ticker"] == "TEST"
     assert 0 <= result["score"] <= 100
@@ -119,10 +70,10 @@ def test_compute_signal_structure_and_bounds():
     assert isinstance(result["conditions"], list)
 
 
-def test_compute_signal_requires_2_valid_rows():
+def test_compute_signal_v8_requires_2_valid_rows():
     # 데이터가 너무 적으면 None (dropna 후 2행 미만)
     closes = [100.0, 101.0, 102.0]
-    result = compute_signal("TEST", _df(closes))
+    result = compute_signal_v8("TEST", _df(closes), strategy="general")
     assert result is None
 
 
