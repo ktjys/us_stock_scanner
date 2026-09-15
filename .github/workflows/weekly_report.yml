@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # 일요일 23:30 UTC = 월요일 08:30 KST
-    - cron: "30 23 * * 0"
+    - cron: "30 23 * * 6"
 
 jobs:
   report:
