@@ -2,9 +2,9 @@ name: US Stock Scanner
 
 on:
   workflow_dispatch:
-  schedule:
+  #schedule:
     # 한국시간 다음날 08:00
-    - cron: "0 23 * * 1-5"
+    #- cron: "0 23 * * 1-5"
 
 jobs:
   scan:
